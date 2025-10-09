@@ -46,6 +46,8 @@ public class TradeSettings : IBotStateSettings, ICountSettings
 
     [Category(TradeConfig), Description("When enabled, the bot will automatically cancel a trade if offered a Pokémon that will evolve.")]
     public bool DisallowTradeEvolve { get; set; } = true;
+    [Category(TradeConfig), Description("When enabled, the internet connection step will be skipped during normal bot loop operation. If already connected, the bot will disconnect from online. Applies only to Scarlet and Violet, and only when running in USB mode.")]
+    public bool PerformLocalTradeSV { get; set; } = false;
 
     /// <summary>
     /// Gets a random trade code based on the range settings.
