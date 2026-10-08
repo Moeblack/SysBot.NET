@@ -1,0 +1,14 @@
+{
+  "Mode": 4,
+  "Bots": [],
+  "Hub": {
+    "Trade": {
+      "PerformLocalTradeSV": true
+    },
+    "Distribution": {
+      "DistributeWhileIdle": false,
+      "RandomCode": false,
+      "LedyQuitIfNoMatch": false
+    }
+  }
+}

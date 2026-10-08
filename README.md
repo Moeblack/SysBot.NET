@@ -1,3 +1,15 @@
+# Moeblack fork: Scarlet/Violet USB local trading
+
+Based on official SysBot.NET, with the SV local-trade patch from [PR #216](https://github.com/kwsch/SysBot.NET/pull/216) and fail-closed USB/connection handling. Upstream configuration defaults remain online; the downloadable ZIP includes an empty, local-only SV configuration. Enable `Hub.Trade.PerformLocalTradeSV` for local wireless trades.
+
+- **[中文使用、构建与待实机验收说明](docs/SV-LOCAL-TRADE.zh-CN.md)**
+- **[Windows download / 下载](https://github.com/Moeblack/SysBot.NET/releases)**
+- Feature branch: `feature/sv-local-trade`; upstream-tracking branch: `master`.
+- Targets Scarlet/Violet **4.0.0**, requires USB control. Local mode rejects Wi-Fi rather than falling back online.
+- Build and automated tests verified; **two-console local trading has NOT been hardware-tested**. No new local web/API request frontend is included.
+
+---
+
 # SysBot.NET
 ![License](https://img.shields.io/badge/License-AGPLv3-blue.svg)
 

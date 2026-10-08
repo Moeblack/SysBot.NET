@@ -14,6 +14,8 @@ namespace SysBot.Pokemon;
 public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRoutineExecutor9SV(Config), ICountBot
 {
     private readonly TradeSettings TradeSettings = Hub.Config.Trade;
+    private SVTradeConnectionPolicy ConnectionPolicy = new(false, SwitchProtocol.USB);
+    private TradePartnerSV? LocalTradePartner;
     public readonly TradeAbuseSettings AbuseSettings = Hub.Config.TradeAbuse;
 
     public ICountSettings Counts => TradeSettings;
@@ -57,8 +59,15 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
 
     public override async Task MainLoop(CancellationToken token)
     {
+        var hardwareInitialized = false;
         try
         {
+            // Capture the mode for this run; changing settings requires restarting the bot.
+            ConnectionPolicy = new SVTradeConnectionPolicy(TradeSettings.PerformLocalTradeSV, Config.Connection.Protocol);
+            Log(ConnectionPolicy.IsLocal
+                ? "SV LOCAL trade mode (USB): internet fallback disabled; online-ID abuse tracking unavailable."
+                : "SV ONLINE trade mode.");
+            hardwareInitialized = true;
             await InitializeHardware(Hub.Config.Trade, token).ConfigureAwait(false);
 
             Log("Identifying trainer data of the host console.");
@@ -82,7 +91,8 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
         }
 
         Log($"Ending {nameof(PokeTradeBotSV)} loop.");
-        await HardStop().ConfigureAwait(false);
+        if (hardwareInitialized)
+            await HardStop().ConfigureAwait(false);
     }
 
     public override Task HardStop()
@@ -214,6 +224,8 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
 
     private async Task<PokeTradeResult> PerformLinkCodeTrade(SAV9SV sav, PokeTradeDetail<PK9> poke, CancellationToken token)
     {
+        LocalTradePartner = null;
+        TradePartnerOfferedOffset = 0;
         // Update Barrier Settings
         UpdateBarrier(poke.IsSynchronized);
         await poke.TradeInitialize(this).ConfigureAwait(false);
@@ -223,10 +235,8 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
         if (StartFromOverworld && !await IsOnOverworld(OverworldOffset, token).ConfigureAwait(false))
             await RecoverToOverworld(token).ConfigureAwait(false);
 
-        // Handles getting into the portal. Will retry this until successful.
-        // if we're not starting from overworld, then ensure we're online before opening link trade -- will break the bot otherwise.
-        // If we're starting from overworld, then ensure we're online before opening the portal.
-        if (!StartFromOverworld && !await IsConnectedOnline(ConnectedOffset, token).ConfigureAwait(false))
+        // Continuous trades must match the captured mode too. Recovery uses the same policy.
+        if (!StartFromOverworld && !ConnectionPolicy.IsExpectedState(await IsConnectedOnline(ConnectedOffset, token).ConfigureAwait(false)))
         {
             await RecoverToOverworld(token).ConfigureAwait(false);
             if (!await ConnectAndEnterPortal(token).ConfigureAwait(false))
@@ -237,6 +247,16 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
         }
         else if (StartFromOverworld && !await ConnectAndEnterPortal(token).ConfigureAwait(false))
         {
+            await RecoverToOverworld(token).ConfigureAwait(false);
+            return PokeTradeResult.RecoverStart;
+        }
+
+        // A local search must begin from the Portal, never a stale box/previous trade.
+        if (ConnectionPolicy.IsLocal &&
+            (!await IsInPokePortal(PortalOffset, token).ConfigureAwait(false) ||
+             await IsConnectedOnline(ConnectedOffset, token).ConfigureAwait(false)))
+        {
+            Log("Local trade is not at an offline Poké Portal. Recovering without searching online.");
             await RecoverToOverworld(token).ConfigureAwait(false);
             return PokeTradeResult.RecoverStart;
         }
@@ -274,11 +294,18 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
         await Click(A, 0_500, token).ConfigureAwait(false);
         await Click(A, 0_500, token).ConfigureAwait(false);
 
-        // Clear it so we can detect it loading.
-        await ClearTradePartnerNID(TradePartnerNIDOffset, token).ConfigureAwait(false);
+        // NID is an online-only signal. Do not read or write this pointer in local mode.
+        if (ConnectionPolicy.UsesOnlineIdentity)
+            await ClearTradePartnerNID(TradePartnerNIDOffset, token).ConfigureAwait(false);
 
         // Wait for Barrier to trigger all bots simultaneously.
         WaitAtBarrierIfApplicable(token);
+        if (ConnectionPolicy.IsLocal && await IsConnectedOnline(ConnectedOffset, token).ConfigureAwait(false))
+        {
+            Log("Game went online before the local search. Aborting, not falling back to online trading.");
+            await RecoverToOverworld(token).ConfigureAwait(false);
+            return PokeTradeResult.RecoverStart;
+        }
         await Click(A, 1_000, token).ConfigureAwait(false);
 
         await poke.TradeSearching(this).ConfigureAwait(false);
@@ -315,12 +342,19 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
         }
         await Task.Delay(3_000 + Hub.Config.Timings.ExtraTimeOpenBox, token).ConfigureAwait(false);
 
-        var tradePartner = await GetTradePartnerInfo(token).ConfigureAwait(false);
-        var trainerNID = await GetTradePartnerNID(TradePartnerNIDOffset, token).ConfigureAwait(false);
-        RecordUtil<PokeTradeBotSV>.Record($"Initiating\t{trainerNID:X16}\t{tradePartner.TrainerName}\t{poke.Trainer.TrainerName}\t{poke.Trainer.ID}\t{poke.Id}\t{toSend.EncryptionConstant:X8}");
-        Log($"Found Link Trade partner: {tradePartner.TrainerName}-{tradePartner.TID7} (ID: {trainerNID})");
+        var tradePartner = ConnectionPolicy.IsLocal
+            ? LocalTradePartner ?? throw new InvalidOperationException("Local trade partner was not validated.")
+            : await GetTradePartnerInfo(token).ConfigureAwait(false);
+        var trainerNID = ConnectionPolicy.UsesOnlineIdentity
+            ? await GetTradePartnerNID(TradePartnerNIDOffset, token).ConfigureAwait(false)
+            : 0UL; // Unavailable, not a synthetic Nintendo identity.
+        var identity = ConnectionPolicy.IsLocal ? "local/no-online-id" : trainerNID.ToString("X16");
+        RecordUtil<PokeTradeBotSV>.Record($"Initiating\t{identity}\t{tradePartner.TrainerName}\t{poke.Trainer.TrainerName}\t{poke.Trainer.ID}\t{poke.Id}\t{toSend.EncryptionConstant:X8}");
+        Log($"Found Link Trade partner: {tradePartner.TrainerName}-{tradePartner.TID7} (ID: {identity})");
 
-        var partnerCheck = await CheckPartnerReputation(this, poke, trainerNID, tradePartner.TrainerName, AbuseSettings, token).ConfigureAwait(false);
+        var partnerCheck = ConnectionPolicy.UsesOnlineIdentity
+            ? await CheckPartnerReputation(this, poke, trainerNID, tradePartner.TrainerName, AbuseSettings, token).ConfigureAwait(false)
+            : PokeTradeResult.Success;
         if (partnerCheck != PokeTradeResult.Success)
         {
             await Click(A, 1_000, token).ConfigureAwait(false); // Ensures we dismiss a popup.
@@ -405,7 +439,8 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
         UpdateCountsAndExport(poke, received, toSend);
 
         // Log for Trade Abuse tracking.
-        LogSuccessfulTrades(poke, trainerNID, tradePartner.TrainerName);
+        if (ConnectionPolicy.UsesOnlineIdentity)
+            LogSuccessfulTrades(poke, trainerNID, tradePartner.TrainerName);
 
         // Sometimes they offered another mon, so store that immediately upon leaving Union Room.
         lastOffered = await SwitchConnection.ReadBytesAbsoluteAsync(TradePartnerOfferedOffset, 8, token).ConfigureAwait(false);
@@ -473,7 +508,8 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
         return PokeTradeResult.TrainerTooSlow;
     }
 
-    // Upon connecting, their Nintendo ID will instantly update.
+    // Online uses NID; local sessions use a new trade-box state plus a distinct trainer.
+    // Called only after starting a search from the verified Poké Portal.
     protected virtual async Task<bool> WaitForTradePartner(CancellationToken token)
     {
         Log("Waiting for trainer...");
@@ -483,11 +519,34 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
         {
             await Task.Delay(1_000, token).ConfigureAwait(false);
             ctr -= 1_000;
-            var newNID = await GetTradePartnerNID(TradePartnerNIDOffset, token).ConfigureAwait(false);
-            if (newNID != 0)
+            if (ConnectionPolicy.IsLocal)
             {
-                TradePartnerOfferedOffset = await SwitchConnection.PointerAll(Offsets.LinkTradePartnerPokemonPointer, token).ConfigureAwait(false);
-                return true;
+                if (await IsConnectedOnline(ConnectedOffset, token).ConfigureAwait(false))
+                {
+                    Log("Local search became online. Aborting this search.");
+                    return false;
+                }
+                var inBox = await IsInBox(PortalOffset, token).ConfigureAwait(false);
+                var partner = inBox ? await TryGetLocalTradePartner(token).ConfigureAwait(false) : null;
+                if (ConnectionPolicy.IsPartnerReady(inBox, 0, partner != null))
+                {
+                    var (valid, offset) = await ValidatePointerAll(Offsets.LinkTradePartnerPokemonPointer, token).ConfigureAwait(false);
+                    if (valid)
+                    {
+                        LocalTradePartner = partner;
+                        TradePartnerOfferedOffset = offset;
+                        return true;
+                    }
+                }
+            }
+            else
+            {
+                var newNID = await GetTradePartnerNID(TradePartnerNIDOffset, token).ConfigureAwait(false);
+                if (ConnectionPolicy.IsPartnerReady(false, newNID, false))
+                {
+                    TradePartnerOfferedOffset = await SwitchConnection.PointerAll(Offsets.LinkTradePartnerPokemonPointer, token).ConfigureAwait(false);
+                    return true;
+                }
             }
 
             // Fully load into the box.
@@ -560,7 +619,7 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
         return await SetUpPortalCursor(token).ConfigureAwait(false);
     }
 
-    // Should be used from the overworld. Opens X menu, attempts to connect online, and enters the Portal.
+    // From the overworld, enter the Portal and apply the captured online/local policy.
     // The cursor should be positioned over Link Trade.
     private async Task<bool> ConnectAndEnterPortal(CancellationToken token)
     {
@@ -607,25 +666,17 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
         }
         await Task.Delay(2_000 + Hub.Config.Timings.ExtraTimeLoadPortal, token).ConfigureAwait(false);
 
-        var protocol = Config.Connection.Protocol;
-        var performLocalTrade = TradeSettings.PerformLocalTradeSV && protocol is SwitchProtocol.USB;
-
-        // Disconnect from online to perform local trade if configured to allow so.
-        if (performLocalTrade && !await DisconnectFromOnline(token).ConfigureAwait(false))
+        if (!await ConnectionPolicy.EnsureConnectionAsync(
+                () => IsConnectedOnline(ConnectedOffset, token),
+                () => ConnectToOnline(Hub.Config, token),
+                () => DisconnectFromOnline(token)).ConfigureAwait(false))
         {
-            Log("Failed to disconnected from online to perform local trade.");
-            return false; // Failed due to some error.
-        }
-
-        // Connect online if not already.
-        if (!performLocalTrade && !await ConnectToOnline(Hub.Config, token).ConfigureAwait(false))
-        {
-            Log("Failed to connect to online.");
-            return false; // Failed, either due to connection or softban.
+            Log(ConnectionPolicy.IsLocal ? "Failed to become offline for local trading." : "Failed to connect to online.");
+            return false;
         }
 
         // Handle the news popping up.
-        if (!performLocalTrade && await SwitchConnection.IsProgramRunning(LibAppletWeID, token).ConfigureAwait(false))
+        if (!ConnectionPolicy.IsLocal && await SwitchConnection.IsProgramRunning(LibAppletWeID, token).ConfigureAwait(false))
         {
             Log("News detected, will close once it's loaded!");
             await Task.Delay(5_000, token).ConfigureAwait(false);
@@ -663,6 +714,8 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
     // Connects online if not already. Assumes the user to be in the X menu to avoid a news screen.
     private async Task<bool> ConnectToOnline(PokeTradeHubConfig config, CancellationToken token)
     {
+        // Defense in depth: future recovery paths may not bypass the local-only policy.
+        ConnectionPolicy.RequireOnlineMode();
         if (await IsConnectedOnline(ConnectedOffset, token).ConfigureAwait(false))
             return true;
 
@@ -759,7 +812,9 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
         OverworldOffset = await SwitchConnection.PointerAll(Offsets.OverworldPointer, token).ConfigureAwait(false);
         PortalOffset = await SwitchConnection.PointerAll(Offsets.PortalBoxStatusPointer, token).ConfigureAwait(false);
         ConnectedOffset = await SwitchConnection.PointerAll(Offsets.IsConnectedPointer, token).ConfigureAwait(false);
-        TradePartnerNIDOffset = await SwitchConnection.PointerAll(Offsets.LinkTradePartnerNIDPointer, token).ConfigureAwait(false);
+        TradePartnerNIDOffset = ConnectionPolicy.UsesOnlineIdentity
+            ? await SwitchConnection.PointerAll(Offsets.LinkTradePartnerNIDPointer, token).ConfigureAwait(false)
+            : 0;
     }
 
     // todo: future
@@ -835,6 +890,23 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
         return PokeTradeResult.Success;
     }
 
+    private async Task<TradePartnerSV?> TryGetLocalTradePartner(CancellationToken token)
+    {
+        // Reuse upstream pointers; do not invent local-mode addresses or an online identity.
+        foreach (var pointer in new[] { Offsets.Trader1MyStatusPointer, Offsets.Trader2MyStatusPointer })
+        {
+            var (valid, offset) = await ValidatePointerAll(pointer, token).ConfigureAwait(false);
+            if (!valid)
+                continue;
+            var status = new TradeMyStatus();
+            var data = await SwitchConnection.ReadBytesAbsoluteAsync(offset, status.Data.Length, token).ConfigureAwait(false);
+            data.CopyTo(status.Data, 0);
+            if (SVTradeConnectionPolicy.IsDistinctTrainer(status, OT, DisplayTID, DisplaySID))
+                return new TradePartnerSV(status);
+        }
+        return null;
+    }
+
     private async Task<TradePartnerSV> GetTradePartnerInfo(CancellationToken token)
     {
         // We're able to see both users' MyStatus, but one of them will be ourselves.
@@ -906,6 +978,19 @@ public class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) : PokeRo
 
     private async Task<(PK9 toSend, PokeTradeResult check)> HandleRandomLedy(SAV9SV sav, PokeTradeDetail<PK9> poke, PK9 offered, PK9 toSend, PartnerDataHolder partner, CancellationToken token)
     {
+        // Local distribution sends the preselected pool entry, without online-ID keyed Ledy swaps.
+        // Never treat every offline partner as online identity 0 in the shared request history.
+        if (ConnectionPolicy.IsLocal)
+        {
+            if (Hub.Config.Distribution.LedyQuitIfNoMatch)
+            {
+                await poke.SendNotification(this, "Nickname/Ledy matching is not supported in SV local mode. Disable LedyQuitIfNoMatch or use a specific trade request.").ConfigureAwait(false);
+                return (toSend, PokeTradeResult.TrainerRequestBad);
+            }
+            Log("Local distribution: sending the preselected pool Pokémon; online-ID Ledy matching is disabled.");
+            return (toSend, PokeTradeResult.Success);
+        }
+
         // Allow the trade partner to do a Ledy swap.
         var config = Hub.Config.Distribution;
         var trade = Hub.Ledy.GetLedyTrade(offered, partner.TrainerOnlineID, config.LedySpecies);

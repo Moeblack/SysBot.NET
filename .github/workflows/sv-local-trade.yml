@@ -1,0 +1,42 @@
+name: SV local trade build
+
+on:
+  push:
+    branches: [feature/sv-local-trade]
+    tags: ['sv-local-*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore SysBot.NET.slnx
+      - name: Build
+        run: dotnet build SysBot.NET.slnx -c Release --no-restore
+      - name: Test
+        run: dotnet test SysBot.Tests/SysBot.Tests.csproj -c Release --no-build --logger "trx;LogFileName=tests.trx" --results-directory artifacts/test-results
+      - name: Publish Windows app
+        run: dotnet publish SysBot.Pokemon.WinForms/SysBot.Pokemon.WinForms.csproj -c Release -r win-x64 --self-contained true -o artifacts/win-x64
+      - name: Include documentation
+        run: |
+          Copy-Item docs/SV-LOCAL-TRADE.zh-CN.md artifacts/win-x64/README-local-trade.zh-CN.md
+          Copy-Item LICENSE artifacts/win-x64/LICENSE
+          Copy-Item examples/config.sv-local.json artifacts/win-x64/config.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SysBot-SV-Local-win-x64
+          path: artifacts/win-x64/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: artifacts/test-results/
