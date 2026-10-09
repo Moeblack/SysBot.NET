@@ -21,38 +21,25 @@ public sealed class PokemonGenerator : IPokemonGenerator
         GameVersionPriority = GameVersionPriorityType.NativeOnly,
         EnableHOMETrackerCheck = true,
         EnableEasterEggs = false,
-        AllowTrainerDataOverride = false,
-        AllowBatchCommands = false,
+        AllowTrainerDataOverride = true,
+        AllowBatchCommands = true,
         ForceLevel100for50 = false,
         SetMatchingBalls = true,
         ForceSpecifiedBall = true,
     };
 
-    public static IReadOnlyList<ShowdownSet> ParseSets(string text)
+    public static IReadOnlyList<ShowdownSet> ParseSets(string text) => ParseRequests(text).Select(r => r.Set).ToArray();
+
+    public static IReadOnlyList<PokemonTextRequest> ParseRequests(string text)
     {
-        var blocks = Normalize(text);
-        var sets = new List<ShowdownSet>();
-        foreach (var block in blocks)
-        {
-            // The string overload stops at the first bad species and loses later sets.
-            IEnumerable<string> lines = block.Split('\n');
-            foreach (var set in ShowdownParsing.GetShowdownSets(lines))
-            {
-                int index = sets.Count + 1;
-                if (index > 12)
-                    throw new OrderException("一次最多导入 12 只宝可梦。");
-                ValidateInput(set, index);
-                sets.Add(set);
-            }
-        }
-        if (sets.Count == 0)
-            throw new OrderException("请粘贴 1–12 只宝可梦的 PS 配置。");
-        return sets;
+        var requests = PokemonTextParser.Parse(text);
+        for (int i = 0; i < requests.Count; i++) ValidateInput(requests[i].Set, i + 1);
+        return requests;
     }
 
     public async Task<IReadOnlyList<GeneratedPokemon>> GenerateAsync(string text)
     {
-        var sets = ParseSets(text);
+        var sets = ParseRequests(text);
         await Gate.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -80,7 +67,7 @@ public sealed class PokemonGenerator : IPokemonGenerator
         }
     }
 
-    private static IReadOnlyList<GeneratedPokemon> Generate(IReadOnlyList<ShowdownSet> sets)
+    private static IReadOnlyList<GeneratedPokemon> Generate(IReadOnlyList<PokemonTextRequest> sets)
     {
         var trainer = AutoLegalityWrapper.GetTrainerInfo<PK9>();
         var output = new List<GeneratedPokemon>(sets.Count);
@@ -88,7 +75,8 @@ public sealed class PokemonGenerator : IPokemonGenerator
         var english = GameInfo.GetStrings("en");
         for (int i = 0; i < sets.Count; i++)
         {
-            var set = sets[i];
+            var set = sets[i].Set;
+            var options = sets[i].Options;
             int index = i + 1;
             // RegenTemplate shares Moves/IVs and sanitizes forms; capture before constructing it.
             var request = new RequestSnapshot(set);
@@ -106,9 +94,10 @@ public sealed class PokemonGenerator : IPokemonGenerator
             var pk = EntityConverter.ConvertToType(generated, typeof(PK9), out _) as PK9;
             if (pk is null)
                 throw Error(index, "生成结果无法转换为朱紫 PK9。");
+            pk.RefreshChecksum();
             var legality = new LegalityAnalysis(pk);
             if (!legality.Valid)
-                throw Error(index, "生成结果未通过合法性检查。");
+                throw Error(index, "该字段组合与合法遭遇不兼容，请调整配置。", legality.Report());
             if (!pk.CanBeTraded(legality.EncounterOriginal))
                 throw Error(index, "该宝可梦不可交换。");
             if (legality.EncounterOriginal.Context != pk.Context || pk.GO)
@@ -116,53 +105,16 @@ public sealed class PokemonGenerator : IPokemonGenerator
             if (pk is IHomeTrack { HasTracker: true })
                 throw Error(index, "生成结果带有 HOME 追踪记录，不能作为原生配置派送。");
             var differences = request.Compare(pk, template);
+            differences.AddRange(options.Compare(pk));
             if (differences.Count != 0)
                 throw Error(index, "合法化改变了指定配置，请调整配置后重试。", differences.ToArray());
             pk.ResetPartyStats();
             // ResetPartyStats can change stored fields after ALM generation; keep the in-memory
             // PK9 checksum current before the batch preflight, not only when writing the work slot.
             pk.RefreshChecksum();
-            output.Add(new GeneratedPokemon(chinese.Species[pk.Species], english.Species[pk.Species], pk));
+            output.Add(new GeneratedPokemon(chinese.Species[pk.Species], english.Species[pk.Species], pk, options.TrainerOverrides, options.Notices.ToArray()));
         }
         return output;
-    }
-
-    private static List<string> Normalize(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            throw new OrderException("请粘贴 PS 配置。");
-        if (text.Length > 60000)
-            throw new OrderException("配置文本过长，请分批导入。");
-        var blocks = new List<string>();
-        var current = new List<string>();
-        bool fence = false;
-        foreach (var raw in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
-        {
-            var line = raw.Trim();
-            if (line.StartsWith("```", StringComparison.Ordinal))
-            {
-                fence = !fence;
-                Flush();
-                continue;
-            }
-            if (line.Length == 0 || line == "---" || (line.StartsWith("===", StringComparison.Ordinal) && line.EndsWith("===", StringComparison.Ordinal)))
-            {
-                Flush();
-                continue;
-            }
-            current.Add(line);
-        }
-        if (fence)
-            throw new OrderException("代码围栏未闭合，请补上结尾的 ```。");
-        Flush();
-        return blocks;
-
-        void Flush()
-        {
-            if (current.Count == 0) return;
-            blocks.Add(string.Join('\n', current));
-            current.Clear();
-        }
     }
 
     private static void ValidateInput(ShowdownSet set, int index)
@@ -177,14 +129,15 @@ public sealed class PokemonGenerator : IPokemonGenerator
             // Accept this exact false value only; do not accept arbitrary invalid shiny tokens.
             if (!set.Shiny && Regex.IsMatch(error.Value ?? "", @"^Shiny\s*:\s*No\s*$", RegexOptions.IgnoreCase))
                 continue;
-            // Allow only these narrowly scoped ALM extensions, never trainer or batch edits.
+            // Optional fields were typed/normalized by PokemonTextParser before reaching ALM.
             if (error.Type == BattleTemplateParseErrorType.TokenUnknown &&
-                Regex.IsMatch(error.Value ?? "", @"^(Ball|Language)\s*:\s*\S", RegexOptions.IgnoreCase))
+                (Regex.IsMatch(error.Value ?? "", @"^(Ball|Language|OT|OTGender|TID|SID)\s*:\s*\S", RegexOptions.IgnoreCase) ||
+                 (error.Value ?? "").StartsWith(".", StringComparison.Ordinal)))
                 continue;
-            throw Error(index, "存在无法解析或不支持的配置行。冠军 SP 不会自动转换为朱紫 EV。", "不支持的行：" + error.Value);
+            throw Error(index, "存在无法解析或不支持的配置行，请查看 Showdown+ 语法文档。", "不支持的行：" + error.Value);
         }
         if (set.EVs.Any(v => v < 0 || v > 252) || set.EVs.Sum() > 510)
-            throw Error(index, "朱紫 EV 单项必须为 0–252，总计不得超过 510；冠军 66 点 SP 不支持自动换算。");
+            throw Error(index, "传统 EV 单项必须为0～252、总计不超过510；冠军配置请使用 SPs: 或 Format: Champions。");
         if (set.IVs.Any(v => v < 0 || v > 31))
             throw Error(index, "IV 单项必须为 0–31。");
         if (set.Level is < 1 or > 100)

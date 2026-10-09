@@ -37,10 +37,16 @@
     } finally { clearTimeout(timer); }
   }
   function teamCount(text) {
-    return text.trim().split(/\n\s*\n/).filter(block => {
-      const first = block.trim().split('\n')[0];
-      return first && !/^(===|#|\/\/|(?:Ability|Level|Shiny|EVs|IVs|Tera Type|Happiness|Friendship|Gender|Ball|Language|OT|TID|SID):|[-.])/i.test(first);
-    }).length;
+    let count = 0, awaitingSpecies = true;
+    for (const raw of text.split('\n')) {
+      const line = raw.trim();
+      if (!line || line === '---' || /^===/.test(line)) { awaitingSpecies = true; continue; }
+      if (/^(#|\/\/|```|(?:Format|Target)\s*:)/i.test(line)) continue;
+      if (awaitingSpecies && !/^([-\.]|(?:Ability|Level|Shiny|EVs|SPs|SP|IVs|Tera Type|Happiness|Friendship|Gender|Ball|Language|OT|OTGender|TID|SID|Marks|Ribbons|Title|Height|Weight|Scale|Size|MetDate|EggMetDate|MetLocation|EggLocation|MetLevel)\s*:)/i.test(line)) {
+        count++; awaitingSpecies = false;
+      }
+    }
+    return count;
   }
   function updateControls() {
     const count = teamCount($('team-text').value);
@@ -114,7 +120,12 @@
       const name = document.createElement('div'); name.className = 'order-name'; name.textContent = (order.name || order.species || '宝可梦') + (order.batchSize > 1 ? ` · ${order.batchIndex}/${order.batchSize}` : '');
       const status = document.createElement('div'); status.className = 'order-status'; status.dataset.status = order.status; status.textContent = statuses[order.status] || '状态待确认';
       const detail = document.createElement('p'); detail.className = 'order-message'; detail.textContent = order.message || '';
-      main.append(name, status, detail); li.append(main);
+      main.append(name, status, detail);
+      if (Array.isArray(order.notices) && order.notices.length) {
+        const conversion = document.createElement('p'); conversion.className = 'order-message conversion-notice';
+        conversion.textContent = order.notices.join('\n'); conversion.style.whiteSpace = 'pre-line'; main.append(conversion);
+      }
+      li.append(main);
       if (order.status === 'queued' && (order.batchIndex ?? 1) === 1) {
         const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'cancel'; cancel.textContent = order.batchSize > 1 ? `取消整批 ${order.batchSize} 只` : '取消待派单'; cancel.dataset.orderId = String(order.id); cancel.setAttribute('aria-label', order.batchSize > 1 ? `取消包含 ${order.batchSize} 只宝可梦的整个待派批次` : `取消 ${name.textContent} 的待派单`); cancel.disabled = !online || cancelling.has(String(order.id)); cancel.addEventListener('click', () => cancelOrder(String(order.id))); li.append(cancel);
       }
@@ -190,7 +201,7 @@
       const result = await api('/api/orders', 'POST', { text, requestId });
       if (!Array.isArray(result.orders) || !Number.isInteger(result.count)) throw new Error('派送结果尚未确认。请保留输入并重试，系统会防止重复入队。');
       requestId = crypto.randomUUID(); persist();
-      message('form-message', `已加入 ${result.count} 只到同一批次。输入交换码一次，留在交换界面逐只确认；本批全部完成再退出。`);
+      message('form-message', [`已加入 ${result.count} 只到同一批次。输入交换码一次，留在交换界面逐只确认；本批全部完成再退出。`, ...(Array.isArray(result.notices) ? result.notices : [])].join('\n'));
     } catch (error) { message('form-message', error.message + '\n输入已保留；本次程序运行内，未编辑时重试不会重复入队。', true); awaitRecovery(error); }
     finally { submitting = false; updateControls(); pollState(); }
   });

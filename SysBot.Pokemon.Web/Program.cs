@@ -69,6 +69,7 @@ app.MapGet("/api/usb", () => scanUsb());
 app.MapPost("/api/connect", (ConnectRequest request, WebOrders orders) => orders.Connect(request.Port));
 app.MapPost("/api/orders", async (OrderRequest request, WebOrders orders) => await orders.SubmitAsync(request));
 app.MapDelete("/api/orders/{id}", (string id, WebOrders orders) => orders.Cancel(id));
+app.MapGet("/syntax", () => Results.Text(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "SHOWDOWN-PLUS.zh-CN.md")), "text/plain; charset=utf-8"));
 app.MapGet("/favicon.ico", () => Results.NoContent());
 app.MapGet("/health", () => new { status = "ok", hardwareDisabled = noHardware, batchSessionHardwareTested = false });
 app.Lifetime.ApplicationStarted.Register(() =>

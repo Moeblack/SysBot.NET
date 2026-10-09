@@ -4,6 +4,7 @@
     <AssemblyName>SysBot.Web</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <Content Include="../docs/SHOWDOWN-PLUS.zh-CN.md" Link="SHOWDOWN-PLUS.zh-CN.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Update="wwwroot/**" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="native/win-x64/libusb-1.0.dll" Link="libusb-1.0.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="native/win-x64/COPYING.libusb" Link="COPYING.libusb" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

@@ -4,9 +4,10 @@ namespace SysBot.Pokemon.Web;
 
 public sealed record OrderRequest(string Text, string RequestId);
 public sealed record ConnectRequest(int Port);
-public sealed record GeneratedPokemon(string Name, string Species, PK9 Pokemon);
-public sealed record OrderView(string Id, string BatchId, string Name, string Species, string Status, string Message, DateTimeOffset CreatedAt, int BatchIndex = 1, int BatchSize = 1);
-public sealed record BatchView(OrderView[] Orders, int Count);
+public sealed record GeneratedPokemon(string Name, string Species, PK9 Pokemon,
+    TrainerOverrideFields TrainerOverrides = TrainerOverrideFields.None, string[]? Notices = null);
+public sealed record OrderView(string Id, string BatchId, string Name, string Species, string Status, string Message, DateTimeOffset CreatedAt, int BatchIndex = 1, int BatchSize = 1, string[]? Notices = null);
+public sealed record BatchView(OrderView[] Orders, int Count, string[]? Notices = null);
 public sealed record DeviceView(string Status, string Message, int? Port);
 public sealed record WebSettings(int? UsbPort = null, string TradeCode = "03180318");
 public sealed record StateView(DeviceView Device, WebSettings Settings, OrderView[] Orders, int Pending);
@@ -107,11 +108,12 @@ public sealed class WebOrders : IAsyncDisposable
                 var id = Guid.NewGuid().ToString("N");
                 int index = added.Count + 1;
                 var view = new OrderView(id, batchId, item.Name, item.Species, "queued",
-                    $"已加入本批第 {index}/{generated.Count} 只；同一批只配对一次。", DateTimeOffset.Now, index, generated.Count);
+                    $"已加入本批第 {index}/{generated.Count} 只；同一批只配对一次。", DateTimeOffset.Now, index, generated.Count, item.Notices);
                 var trade = new PokeTradeDetail<PK9>
                 {
                     Code = int.Parse(settings.TradeCode),
                     TradeData = item.Pokemon,
+                    TrainerOverrides = item.TrainerOverrides,
                     Trainer = new PokeTradeTrainerInfo("Local Web"),
                     Notifier = new WebTradeNotifier(this, id),
                     Type = PokeTradeType.Specific,
@@ -146,7 +148,8 @@ public sealed class WebOrders : IAsyncDisposable
             }
             catch (OrderException) { /* Queue survives a unavailable device; state carries the recovery action. */ }
         }
-        return new BatchView(added.ToArray(), added.Count);
+        return new BatchView(added.ToArray(), added.Count,
+            generated.SelectMany(p => p.Notices ?? []).ToArray());
     }
 
     public StateView Connect(int port)

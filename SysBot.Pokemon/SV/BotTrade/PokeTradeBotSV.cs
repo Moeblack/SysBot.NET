@@ -433,12 +433,12 @@ public partial class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) 
         }
         if (ConnectionPolicy.IsLocal && TradeSettings.ApplyPartnerTrainerSV && poke.Type == PokeTradeType.Specific)
         {
-            if (SVAutoOT.TryApply(toSend, tradePartner, out var adapted, out var reason))
+            if (SVAutoOT.TryApply(toSend, tradePartner, out var adapted, out var reason, poke.TrainerOverrides))
             {
                 toSend = adapted;
                 poke.TradeData = adapted;
                 await SetBoxPokemonAbsolute(BoxStartOffset, adapted, token, sav).ConfigureAwait(false);
-                Log($"AutoOT applied: {tradePartner.TrainerName}-{tradePartner.TID7} (recipient identity).");
+                Log($"AutoOT applied: {adapted.OriginalTrainerName}-{adapted.TrainerTID7:D6}; explicit trainer fields preserved ({poke.TrainerOverrides}).");
             }
             else
             {

@@ -23,6 +23,10 @@ public sealed record PokeTradeDetail<TPoke> : IFavoredEntry, IReadyStatus where 
     /// <summary> Data to be traded </summary>
     public required TPoke TradeData { get; set; }
 
+    /// <summary>Fields explicitly provided in the request, which recipient AutoOT must preserve.</summary>
+    public TrainerOverrideFields TrainerOverrides { get; init; }
+
+
     /// <summary> Trainer details </summary>
     public required PokeTradeTrainerInfo Trainer { get; init; }
 

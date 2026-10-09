@@ -396,6 +396,30 @@ public sealed class WebOrdersTests
         Assert.Equal(2, fixture.Queue.Count);
     }
 
+    [Fact]
+    public async Task OptionalTrainerFieldsAndSpNoticesReachEveryRealQueuedMember()
+    {
+        await using var fixture = new Fixture(new PokemonGenerator());
+        var batch = await fixture.Orders.SubmitAsync(Request("Eevee\nOT: Alice\nSPs: 32 HP / 32 Atk / 2 Spe\n\nPikachu\nTID: 123456\n"));
+        var members = Members(fixture.Dequeue());
+        Assert.Equal(TrainerOverrideFields.Name, members[0].TrainerOverrides);
+        Assert.Equal("Alice", members[0].TradeData.OriginalTrainerName);
+        Assert.Equal(TrainerOverrideFields.TID, members[1].TrainerOverrides);
+        Assert.Equal(123456u, members[1].TradeData.TrainerTID7);
+        Assert.Contains(batch.Notices!, n => n.Contains("有损换算"));
+        Assert.NotEmpty(fixture.Orders.Snapshot().Orders[0].Notices!);
+        Assert.Empty(fixture.Orders.Snapshot().Orders[1].Notices!);
+    }
+
+    [Fact]
+    public async Task InvalidExtendedSecondMemberNeverPartiallyEnqueues()
+    {
+        await using var fixture = new Fixture(new PokemonGenerator());
+        await Assert.ThrowsAsync<OrderException>(() => fixture.Orders.SubmitAsync(Request("Eevee\nOT: Alice\n\nPikachu\nMetDate: 2025-02-30")));
+        Assert.Empty(fixture.Orders.Snapshot().Orders);
+        Assert.Equal(0, fixture.Queue.Count);
+    }
+
     private static IReadOnlyList<PokeTradeDetail<PK9>> Members(PokeTradeDetail<PK9> root) =>
         Assert.IsAssignableFrom<IReadOnlyList<PokeTradeDetail<PK9>>>(root.BatchTrades);
 

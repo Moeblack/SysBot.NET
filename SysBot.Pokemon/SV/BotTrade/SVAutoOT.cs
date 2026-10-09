@@ -8,7 +8,7 @@ namespace SysBot.Pokemon;
 /// </summary>
 public static class SVAutoOT
 {
-    public static bool TryApply(PK9 source, TradePartnerSV partner, out PK9 result, out string reason)
+    public static bool TryApply(PK9 source, TradePartnerSV partner, out PK9 result, out string reason, TrainerOverrideFields overrides = TrainerOverrideFields.None)
     {
         result = source;
         var before = new LegalityAnalysis(source);
@@ -23,10 +23,22 @@ public static class SVAutoOT
             return false;
         }
         var clone = (PK9)source.Clone();
-        clone.OriginalTrainerTrash.Clear();
-        clone.OriginalTrainerName = partner.TrainerName;
-        clone.OriginalTrainerGender = (byte)partner.Gender;
-        clone.ID32 = partner.ID32;
+        if (!overrides.HasFlag(TrainerOverrideFields.Name))
+        {
+            clone.OriginalTrainerTrash.Clear();
+            clone.OriginalTrainerName = partner.TrainerName;
+        }
+        if (!overrides.HasFlag(TrainerOverrideFields.Gender))
+            clone.OriginalTrainerGender = (byte)partner.Gender;
+        var tid = overrides.HasFlag(TrainerOverrideFields.TID) ? source.TrainerTID7 : partner.ID32 % 1_000_000;
+        var sid = overrides.HasFlag(TrainerOverrideFields.SID) ? source.TrainerSID7 : partner.ID32 / 1_000_000;
+        var id = (ulong)sid * 1_000_000 + tid;
+        if (id > uint.MaxValue)
+        {
+            reason = "手填ID与接收方ID组合超出32位范围，保留生成时的训练家身份。";
+            return false;
+        }
+        clone.ID32 = (uint)id;
         // Trainer IDs participate in shiny XOR. Keep the requested shiny class; also
         // prevent a non-shiny individual becoming shiny by coincidence after the ID change.
         if (source.IsShiny || clone.IsShiny)

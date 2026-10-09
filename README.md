@@ -2,11 +2,12 @@
 
 Based on official SysBot.NET, with the SV local-trade patch from [PR #216](https://github.com/kwsch/SysBot.NET/pull/216) and fail-closed USB/connection handling. Upstream configuration defaults remain online; the downloadable ZIP includes an empty, local-only SV configuration. Enable `Hub.Trade.PerformLocalTradeSV` for local wireless trades.
 
-- **[中文使用、构建与待实机验收说明](docs/SV-LOCAL-TRADE.zh-CN.md)**
+- **[中文使用、构建与实机验收记录](docs/SV-LOCAL-TRADE.zh-CN.md)**
+- **[Showdown+ v1 中文配置语法：可选扩展、冠军 SP 转换与示例](docs/SHOWDOWN-PLUS.zh-CN.md)**
 - **[Windows download / 下载](https://github.com/Moeblack/SysBot.NET/releases)**
 - Feature branch: `feature/sv-local-trade`; upstream-tracking branch: `master`.
 - Targets Scarlet/Violet **4.0.0**, requires USB control. Local mode rejects Wi-Fi rather than falling back online.
-- Build and automated tests verified; **two-console local trading has NOT been hardware-tested**. No new local web/API request frontend is included.
+- Build and automated tests verified; hardware checks have covered a two-Pokémon local-trade batch and voluntary exit. This branch includes a local web/API request frontend. These checks do not imply hardware verification of every optional field or AutoOT combination.
 
 ---
 

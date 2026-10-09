@@ -133,6 +133,29 @@ const crypto = require('node:crypto');
     }
     await page.screenshot({ path:path.join(out,'mobile.png'),fullPage:true });
     checks.push('draft survives reload; 390px and 320px layouts do not overflow');
+    // Actual extended parser/generator/queue, not UI fixtures and never hardware.
+    const syntaxResponse = await fetch(url + '/syntax');
+    assert.equal(syntaxResponse.status, 200);
+    assert((await syntaxResponse.text()).includes('Showdown+ v1'));
+    assert.equal(await page.locator('a[href="/syntax"]').count(), 1);
+    const extended = 'Format: Champions\nEevee\nOT: Alice\nEVs: 32 HP / 32 Atk / 2 Spe\nMarks: Partner\nTitle: Partner\nScale: 128\nMetDate: 2025-06-02';
+    await page.locator('#team-text').fill(extended);
+    assert((await page.locator('#submit-hint').innerText()).includes('识别到 1 只'));
+    const extendedResponse = page.waitForResponse(r => r.url().endsWith('/api/orders') && r.request().method() === 'POST', {timeout:180000});
+    await page.locator('#send').click();
+    const ext = await extendedResponse, extBody = await ext.json();
+    assert.equal(ext.status(), 200, JSON.stringify(extBody));
+    assert(extBody.notices.some(n => n.includes('有损换算')));
+    await page.waitForFunction(() => document.getElementById('form-message').textContent.includes('252 HP / 252 Atk / 4 Spe'));
+    await page.reload();
+    await page.waitForFunction(() => document.querySelector('#orders').textContent.includes('有损换算'));
+    assert((await page.locator('#orders').innerText()).includes('252 HP / 252 Atk / 4 Spe'));
+    assert.equal(await page.locator('#team-text').inputValue(), extended);
+    for (const width of [390,320]) {
+      await page.setViewportSize({width,height:844});
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Extended notices overflow at '+width);
+    }
+    checks.push('Showdown+ actual generation, optional fields, Champions conversion visible after reload, bundled syntax document');
     // Browser-only state fixtures: exercise the new states without controlling any device.
     let fixtureState = {device:{status:'ready',message:'fixture',port:1},settings:{tradeCode:'03180318'},pending:1,
       orders:teamBody.orders.map((o,i)=>({...o,status:i===0?'completed':'waiting',message:i===0?'第 1/2 只已完成；请留在交换界面继续下一只。':'同一连接中等待下一只。'}))};
