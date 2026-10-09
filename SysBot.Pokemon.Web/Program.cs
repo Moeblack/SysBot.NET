@@ -2,6 +2,9 @@ using System.Diagnostics;
 using SysBot.Pokemon.Web;
 
 var noBrowser = args.Contains("--no-browser");
+// Explicit offline generation/testing mode: neither scanning nor device connection may touch USB.
+var noHardware = Environment.GetEnvironmentVariable("SYSBOT_WEB_NO_HARDWARE") == "1";
+Func<UsbView> scanUsb = noHardware ? () => new UsbView([], "无硬件模式：仅生成与排队，不会连接 Switch。") : UsbDevices.Scan;
 var portText = Environment.GetEnvironmentVariable("SYSBOT_WEB_PORT") ?? "5217";
 if (!int.TryParse(portText, out var port) || port is < 1 or > 65535)
     throw new ArgumentException("SYSBOT_WEB_PORT must be 1-65535.");
@@ -15,10 +18,11 @@ builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
 builder.WebHost.UseUrls(url);
 builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 131072);
 builder.Services.AddSingleton<IPokemonGenerator, PokemonGenerator>();
-builder.Services.AddSingleton<IWebTradeDevice, UsbTradeDevice>();
+if (noHardware) builder.Services.AddSingleton<IWebTradeDevice, DisabledTradeDevice>();
+else builder.Services.AddSingleton<IWebTradeDevice, UsbTradeDevice>();
 builder.Services.AddSingleton(sp => new WebOrders(
     sp.GetRequiredService<IPokemonGenerator>(), sp.GetRequiredService<IWebTradeDevice>(),
-    Environment.GetEnvironmentVariable("SYSBOT_WEB_DATA") ?? Path.Combine(AppContext.BaseDirectory, "data")));
+    Environment.GetEnvironmentVariable("SYSBOT_WEB_DATA") ?? Path.Combine(AppContext.BaseDirectory, "data"), scanUsb));
 var app = builder.Build();
 
 app.Use(async (context, next) =>
@@ -61,15 +65,16 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapGet("/api/catalog", () => new { pokemon = PokemonCatalog.Choices, defaultSpecies = "Metagross" });
 app.MapGet("/api/state", (WebOrders orders) => orders.Snapshot());
-app.MapGet("/api/usb", () => UsbDevices.Scan());
+app.MapGet("/api/usb", () => scanUsb());
 app.MapPost("/api/connect", (ConnectRequest request, WebOrders orders) => orders.Connect(request.Port));
 app.MapPost("/api/orders", async (OrderRequest request, WebOrders orders) => await orders.SubmitAsync(request));
 app.MapDelete("/api/orders/{id}", (string id, WebOrders orders) => orders.Cancel(id));
 app.MapGet("/favicon.ico", () => Results.NoContent());
-app.MapGet("/health", () => new { status = "ok", hardwareTested = false });
+app.MapGet("/health", () => new { status = "ok", hardwareDisabled = noHardware, batchSessionHardwareTested = false });
 app.Lifetime.ApplicationStarted.Register(() =>
 {
     Console.WriteLine($"本地派送台：{url} — 关闭此窗口会停止派送；不要同时运行桌面版控制同一台 Switch。");
+    if (noHardware) Console.WriteLine("无硬件模式已启用：不会扫描或连接 Switch。");
     if (!noBrowser)
     {
         try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
@@ -79,3 +84,9 @@ app.Lifetime.ApplicationStarted.Register(() =>
 await app.RunAsync();
 
 public partial class Program;
+
+internal sealed class DisabledTradeDevice : IWebTradeDevice
+{
+    public Task RunAsync(SysBot.Pokemon.PokeTradeHub<PKHeX.Core.PK9> hub, int port, Action<DeviceView> report, CancellationToken token) =>
+        Task.FromException(new OrderException("无硬件模式已启用，禁止连接 Switch。"));
+}

@@ -5,7 +5,7 @@ namespace SysBot.Pokemon.Web;
 public sealed record OrderRequest(string Text, string RequestId);
 public sealed record ConnectRequest(int Port);
 public sealed record GeneratedPokemon(string Name, string Species, PK9 Pokemon);
-public sealed record OrderView(string Id, string BatchId, string Name, string Species, string Status, string Message, DateTimeOffset CreatedAt);
+public sealed record OrderView(string Id, string BatchId, string Name, string Species, string Status, string Message, DateTimeOffset CreatedAt, int BatchIndex = 1, int BatchSize = 1);
 public sealed record BatchView(OrderView[] Orders, int Count);
 public sealed record DeviceView(string Status, string Message, int? Port);
 public sealed record WebSettings(int? UsbPort = null, string TradeCode = "03180318");
@@ -32,9 +32,11 @@ public sealed class WebOrders : IAsyncDisposable
     private readonly IWebTradeDevice device;
     private readonly Func<UsbView> scanUsb;
     private readonly string settingsFile;
+    private readonly string receiptsDirectory;
     private readonly Dictionary<string, (string Text, Task<BatchView> Task)> submissions = [];
     private readonly List<OrderView> orders = [];
     private readonly Dictionary<string, PokeTradeDetail<PK9>> details = [];
+    private readonly Dictionary<string, PokeTradeDetail<PK9>> batchRoots = [];
     private readonly CancellationTokenSource shutdown = new();
     private Task? deviceTask;
     private bool requiresExplicitReconnect;
@@ -49,6 +51,7 @@ public sealed class WebOrders : IAsyncDisposable
         this.scanUsb = scanUsb ?? UsbDevices.Scan;
         Directory.CreateDirectory(dataDirectory);
         settingsFile = Path.Combine(dataDirectory, "web-settings.json");
+        receiptsDirectory = Path.Combine(dataDirectory, "received");
         try { settings = System.Text.Json.JsonSerializer.Deserialize<WebSettings>(File.ReadAllText(settingsFile)) ?? new(); }
         catch (Exception e) when (e is IOException or System.Text.Json.JsonException) { settings = new(); }
         if (!int.TryParse(settings.TradeCode, out var code) || code is < 0 or > 99999999 || settings.TradeCode.Length != 8)
@@ -64,7 +67,7 @@ public sealed class WebOrders : IAsyncDisposable
     public StateView Snapshot()
     {
         lock (sync)
-            return new(deviceState, settings, orders.ToArray(), orders.Count(o => o.Status is "queued" or "preparing" or "searching" or "trading"));
+            return new(deviceState, settings, orders.ToArray(), orders.Count(o => o.Status is "queued" or "waiting" or "preparing" or "searching" or "trading"));
     }
 
     public Task<BatchView> SubmitAsync(OrderRequest request)
@@ -97,12 +100,14 @@ public sealed class WebOrders : IAsyncDisposable
         int? autoPort;
         lock (sync)
         {
-            if (orders.Count(o => o.Status is "queued" or "preparing" or "searching" or "trading") + generated.Count > 60)
+            if (orders.Count(o => o.Status is "queued" or "waiting" or "preparing" or "searching" or "trading") + generated.Count > 60)
                 throw new OrderException("待派送已经很多了，先收几只再继续添加（最多待派 60 只）。");
             foreach (var item in generated)
             {
                 var id = Guid.NewGuid().ToString("N");
-                var view = new OrderView(id, batchId, item.Name, item.Species, "queued", "已排队，轮到后自动派送。", DateTimeOffset.Now);
+                int index = added.Count + 1;
+                var view = new OrderView(id, batchId, item.Name, item.Species, "queued",
+                    $"已加入本批第 {index}/{generated.Count} 只；同一批只配对一次。", DateTimeOffset.Now, index, generated.Count);
                 var trade = new PokeTradeDetail<PK9>
                 {
                     Code = int.Parse(settings.TradeCode),
@@ -117,10 +122,14 @@ public sealed class WebOrders : IAsyncDisposable
                 orders.Add(view);
                 details.Add(id, trade);
                 added.Add(view);
-                Hub.Queues.Enqueue(PokeRoutineType.LinkTrade, trade, PokeTradePriorities.TierFree);
             }
-            // Release the whole validated batch to the existing FIFO at the same priority.
-            foreach (var item in added) details[item.Id].IsReady = true;
+            // One real queue entry owns the whole session; members are never dequeued independently.
+            var members = added.Select(item => details[item.Id]).ToArray();
+            var root = members[0];
+            if (members.Length > 1) root.BatchTrades = Array.AsReadOnly(members);
+            batchRoots.Add(batchId, root);
+            Hub.Queues.Enqueue(PokeRoutineType.LinkTrade, root, PokeTradePriorities.TierFree);
+            root.IsReady = true;
             autoPort = settings.UsbPort;
         }
         if (autoPort is null)
@@ -167,7 +176,7 @@ public sealed class WebOrders : IAsyncDisposable
                             requiresExplicitReconnect = true;
                             // Freeze uncertainty before the bot's generic abort notifier can overwrite it.
                             foreach (var item in orders.Where(o => o.Status is "preparing" or "searching" or "trading" || (o.Status == "queued" && details[o.Id].IsProcessing)).ToArray())
-                                Update(item.Id, "failed", "USB 通信中断，未确认是否收货；请先检查游戏盒子，避免重复派送。");
+                                Fail(item.Id, "USB 通信中断，未确认是否收货；请先检查游戏盒子，避免重复派送。");
                         }
                     }, shutdown.Token).ConfigureAwait(false);
                 }
@@ -181,7 +190,9 @@ public sealed class WebOrders : IAsyncDisposable
                         if (!shutdown.IsCancellationRequested && deviceState.Status != "error")
                             deviceState = new("error", "USB 连接已停止。检查线缆、端口、usb-botbase 与朱紫 4.0.0，再点「连接派送机」。", port);
                         foreach (var item in orders.Where(o => o.Status is "preparing" or "searching" or "trading" || (o.Status == "queued" && details[o.Id].IsProcessing)).ToArray())
-                            Update(item.Id, "failed", "连接中断，未确认是否收货；请先检查游戏盒子，避免重复派送。");
+                            Fail(item.Id, "连接中断，未确认是否收货；请先检查游戏盒子，避免重复派送。");
+                        foreach (var item in orders.Where(o => o.Status == "waiting").ToArray())
+                            StopNotStarted(item.Id, "本批已停止，这只尚未完成派送；请核对已收货部分，不要整批重复提交。");
                     }
                 }
             });
@@ -195,9 +206,13 @@ public sealed class WebOrders : IAsyncDisposable
         {
             var item = orders.Find(o => o.Id == id) ?? throw new OrderException("没有找到这笔订单，请刷新队列。");
             if (item.Status == "cancelled") return Snapshot();
-            if (item.Status != "queued" || Hub.Queues.GetQueue(PokeRoutineType.LinkTrade).Remove(details[id]) != 1)
-                throw new OrderException("这只已经开始派送，不能从等待队列取消；请在游戏内取消交换。");
-            Update(id, "cancelled", "已从等待队列移除。");
+            var root = batchRoots[item.BatchId];
+            var members = orders.Where(o => o.BatchId == item.BatchId).ToArray();
+            if (root.IsProcessing || members.Any(o => o.Status != "queued") ||
+                Hub.Queues.GetQueue(PokeRoutineType.LinkTrade).Remove(root) != 1)
+                throw new OrderException("本批已经开始，不能拆开取消；请在游戏内退出交换以停止余下部分。");
+            foreach (var member in members)
+                Update(member.Id, "cancelled", $"本批 {members.Length} 只已全部从等待队列移除。");
             return Snapshot();
         }
     }
@@ -207,8 +222,81 @@ public sealed class WebOrders : IAsyncDisposable
         lock (sync)
         {
             var i = orders.FindIndex(o => o.Id == id);
-            if (i < 0 || orders[i].Status is "completed" or "cancelled" or "failed") return;
+            if (i < 0 || orders[i].Status is "completed" or "cancelled" or "failed" or "stopped") return;
             orders[i] = orders[i] with { Status = status, Message = message };
+        }
+    }
+
+    internal void Begin(string id)
+    {
+        lock (sync)
+        {
+            var current = orders.Find(o => o.Id == id)!;
+            foreach (var item in orders.Where(o => o.BatchId == current.BatchId && o.Id != id && o.Status == "queued").ToArray())
+                Update(item.Id, "waiting", "本批已开始；轮到这只时直接在当前交换会话继续，不必重新搜索。");
+            Update(id, "preparing", $"正在准备本批第 {current.BatchIndex}/{current.BatchSize} 只。");
+        }
+    }
+
+    internal void SaveReceived(string id, PK9 received)
+    {
+        // The next member replaces B1S1. Preserve the actual received individual locally first.
+        Directory.CreateDirectory(receiptsDirectory);
+        var path = Path.Combine(receiptsDirectory, id + ".pk9");
+        var data = new byte[received.SIZE_STORED];
+        received.WriteEncryptedDataStored(data);
+        using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        stream.Write(data);
+        stream.Flush(true);
+    }
+
+    internal bool Complete(string id)
+    {
+        lock (sync)
+        {
+            var current = orders.Find(o => o.Id == id)!;
+            if (current.Status is "completed" or "cancelled" or "failed" or "stopped") return false;
+            Update(id, "completed", $"第 {current.BatchIndex}/{current.BatchSize} 只已完成；请留在交换界面继续下一只。");
+            var batch = orders.Where(o => o.BatchId == current.BatchId).ToArray();
+            if (batch.All(o => o.Status == "completed"))
+                foreach (var item in batch)
+                {
+                    var index = orders.FindIndex(o => o.Id == item.Id);
+                    orders[index] = orders[index] with { Message = $"本批 {batch.Length} 只全部完成，可以退出交换。" };
+                }
+            return true;
+        }
+    }
+
+    internal void StopNotStarted(string id, string message)
+    {
+        lock (sync)
+        {
+            var current = orders.Find(o => o.Id == id)!;
+            if (current.Status is "completed" or "cancelled") return;
+            Update(id, "stopped", message);
+            foreach (var item in orders.Where(o => o.BatchId == current.BatchId && o.Status == "completed").ToArray())
+            {
+                var index = orders.FindIndex(o => o.Id == item.Id);
+                orders[index] = orders[index] with { Message = "这只已完成，但本批后续中断；请勿重复提交已收到的宝可梦。" };
+            }
+        }
+    }
+
+    internal void Fail(string id, string message)
+    {
+        lock (sync)
+        {
+            var current = orders.Find(o => o.Id == id)!;
+            if (current.Status is "completed" or "cancelled" or "failed" or "stopped") return;
+            Update(id, "failed", message);
+            foreach (var item in orders.Where(o => o.BatchId == current.BatchId && o.Status is "queued" or "waiting").ToArray())
+                Update(item.Id, "stopped", "本批已中断，这只尚未开始交换；请核对收货后只重提未收到的部分。");
+            foreach (var item in orders.Where(o => o.BatchId == current.BatchId && o.Status == "completed").ToArray())
+            {
+                var index = orders.FindIndex(o => o.Id == item.Id);
+                orders[index] = orders[index] with { Message = "这只已完成，但本批后续中断；请勿重复提交已收到的宝可梦。" };
+            }
         }
     }
 
@@ -230,7 +318,7 @@ internal sealed class WebTradeNotifier(WebOrders owner, string id) : IPokeTradeN
     public Action<PokeRoutineExecutor<PK9>>? OnFinish { private get; set; }
     public Task TradeInitialize(PokeRoutineExecutor<PK9> routine, PokeTradeDetail<PK9> info)
     {
-        owner.Update(id, "preparing", "正在准备这只宝可梦。");
+        owner.Begin(id);
         return Task.CompletedTask;
     }
     public Task TradeSearching(PokeRoutineExecutor<PK9> routine, PokeTradeDetail<PK9> info)
@@ -248,20 +336,25 @@ internal sealed class WebTradeNotifier(WebOrders owner, string id) : IPokeTradeN
             PokeTradeResult.TradeEvolveNotAllowed => "交换材料会进化，请换一只不会交换进化的宝可梦。",
             _ => "本次派送没有确认完成。请先检查游戏盒子，确认收货情况后再决定是否重试。",
         };
-        owner.Update(id, "failed", message);
+        owner.Fail(id, message);
         OnFinish?.Invoke(routine);
         return Task.CompletedTask;
     }
     public Task TradeFinished(PokeRoutineExecutor<PK9> routine, PokeTradeDetail<PK9> info, PK9 result)
     {
-        owner.Update(id, "completed", "交换已完成。还有下一只时，用同一密码再次搜索即可。");
+        // If archiving fails, the real success remains visible, but the batch must not overwrite this slot.
+        if (owner.Complete(id)) owner.SaveReceived(id, result);
         OnFinish?.Invoke(routine);
         return Task.CompletedTask;
     }
     public Task SendNotification(PokeRoutineExecutor<PK9> routine, PokeTradeDetail<PK9> info, string message)
     {
-        if (message.Contains("Waiting for a Pokémon", StringComparison.OrdinalIgnoreCase))
-            owner.Update(id, "trading", "已找到接收机，请在游戏里选择交换材料并确认。");
+        if (message.StartsWith("BatchNotStarted:", StringComparison.Ordinal))
+            owner.StopNotStarted(id, "本批已中断，这只尚未开始交换；请只重提未收到的部分。");
+        else if (message.StartsWith("BatchWaitingOffer:", StringComparison.Ordinal))
+            owner.Update(id, "preparing", "同一连接内准备下一只：请先选择下一只交换材料，等对方显示目标宝可梦后再确认。");
+        else if (message.Contains("Waiting for a Pokémon", StringComparison.OrdinalIgnoreCase))
+            owner.Update(id, "trading", "请在当前交换会话选择下一只材料并确认；本批结束前不要退出。");
         return Task.CompletedTask;
     }
     public Task SendNotification(PokeRoutineExecutor<PK9> routine, PokeTradeDetail<PK9> info, PokeTradeSummary summary) => Task.CompletedTask;

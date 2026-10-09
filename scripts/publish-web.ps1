@@ -1,7 +1,7 @@
-param([string]$Dotnet = 'dotnet')
+param([string]$Dotnet = 'dotnet', [string]$OutputDirectory = 'artifacts/web-win-x64')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$output = Join-Path $root 'artifacts/web-win-x64'
+$output = Join-Path $root $OutputDirectory
 $zip = Join-Path $root 'artifacts/SysBot-SV-Local-Web-win-x64.zip'
 Push-Location $root
 try {
@@ -10,6 +10,7 @@ try {
     Copy-Item docs/SV-LOCAL-WEB.zh-CN.md "$output/README.zh-CN.md"
     Copy-Item docs/SV-LOCAL-WEB.zh-CN.md "$output/SV-LOCAL-WEB.zh-CN.md"
     Copy-Item docs/SV-LOCAL-TRADE.zh-CN.md "$output/SV-LOCAL-TRADE.zh-CN.md"
+    Copy-Item docs/SV-SESSION-BATCH.zh-CN.md "$output/SV-SESSION-BATCH.zh-CN.md"
     Copy-Item flow-report.html "$output/flow-report.html"
     Copy-Item LICENSE "$output/LICENSE"
     Copy-Item SysBot.Pokemon.Web/native/win-x64/README.md "$output/libusb-README.md"

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using PKHeX.Core;
@@ -51,6 +52,9 @@ public sealed record PokeTradeDetail<TPoke> : IFavoredEntry, IReadyStatus where 
 
     /// <summary> Indicates if the trade data is currently being traded. </summary>
     public bool IsProcessing { get; set; }
+
+    /// <summary> Root-only batch, with this detail first. Only the root is queued. </summary>
+    public IReadOnlyList<PokeTradeDetail<TPoke>>? BatchTrades { get; set; }
 
     public async Task TradeInitialize(PokeRoutineExecutor<TPoke> routine) => await Notifier.TradeInitialize(routine, this).ConfigureAwait(false);
     public async Task TradeSearching(PokeRoutineExecutor<TPoke> routine) => await Notifier.TradeSearching(routine, this).ConfigureAwait(false);

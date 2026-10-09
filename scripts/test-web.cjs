@@ -18,7 +18,7 @@ const crypto = require('node:crypto');
   try {
     server = spawn(process.env.TEST_WEB_EXE || dotnet, process.env.TEST_WEB_EXE ? ['--no-browser'] : [dll, '--no-browser'], {
       cwd: root,
-      env: { ...process.env, SYSBOT_WEB_PORT: port, SYSBOT_WEB_DATA: path.join(out, 'data') },
+      env: { ...process.env, SYSBOT_WEB_PORT: port, SYSBOT_WEB_NO_HARDWARE: '1', SYSBOT_WEB_DATA: path.join(out, 'data-' + crypto.randomUUID()) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     await new Promise((resolve, reject) => {
@@ -38,7 +38,8 @@ const crypto = require('node:crypto');
     assert(catalog.pokemon.find(p => p.id === 'Metagross').name.includes('巨金怪'));
     const usb = (await api('/api/usb')).body;
     assert.deepEqual(usb.ports, [], 'Browser acceptance must run without a connected Switch.');
-    checks.push('real catalog and no-device USB scan; no native finalizer crash');
+    assert.equal((await api('/health')).body.hardwareDisabled,true);
+    checks.push('real catalog; explicit offline mode forbids USB scanning and device access');
 
     browser = await chromium.launch({ headless: true, ...(process.env.TEST_BROWSER_CHANNEL ? {channel:process.env.TEST_BROWSER_CHANNEL} : {}) });
     const page = await browser.newPage({ viewport: { width: 1180, height: 900 } });
@@ -92,7 +93,16 @@ const crypto = require('node:crypto');
     assert.equal(teamBody.count, 2);
     assert.deepEqual(teamBody.orders.map(o => o.species), ['Pikachu', 'Eevee']);
     await page.waitForFunction(() => document.querySelectorAll('#orders .order').length === 3);
-    checks.push('paste two-member team: real generation, both queued in input order, same trade code');
+    assert.deepEqual(teamBody.orders.map(o => o.batchIndex),[1,2]);
+    assert(teamBody.orders.every(o => o.batchSize === 2));
+    assert.equal(await page.locator('#orders button').count(),1);
+    assert((await page.locator('#form-message').innerText()).includes('留在交换界面'));
+    const batchCancelResponse = page.waitForResponse(r => r.request().method() === 'DELETE');
+    await page.getByRole('button',{name:'取消包含 2 只宝可梦的整个待派批次'}).click();
+    assert.equal((await batchCancelResponse).status(),200);
+    await page.waitForFunction(() => document.querySelectorAll('#orders [data-status="cancelled"]').length === 3);
+    assert.equal(await page.locator('#orders button').count(),0);
+    checks.push('two-member session batch: real generation, numbered progress, one whole-batch cancel action removes both');
 
     const invalid = 'Pikachu\n\nNotAPokemonAtAll\n\nEevee';
     const before = (await api('/api/state')).body.orders.length;
@@ -123,6 +133,18 @@ const crypto = require('node:crypto');
     }
     await page.screenshot({ path:path.join(out,'mobile.png'),fullPage:true });
     checks.push('draft survives reload; 390px and 320px layouts do not overflow');
+    // Browser-only state fixtures: exercise the new states without controlling any device.
+    let fixtureState = {device:{status:'ready',message:'fixture',port:1},settings:{tradeCode:'03180318'},pending:1,
+      orders:teamBody.orders.map((o,i)=>({...o,status:i===0?'completed':'waiting',message:i===0?'第 1/2 只已完成；请留在交换界面继续下一只。':'同一连接中等待下一只。'}))};
+    await page.route('**/api/state', route => route.fulfill({json:fixtureState}));
+    await page.waitForFunction(()=>document.querySelector('#orders').textContent.includes('同批等待'));
+    assert.equal(await page.locator('#orders button').count(),0);
+    assert((await page.locator('#orders').innerText()).includes('1/2'));
+    fixtureState = {...fixtureState,pending:0,orders:fixtureState.orders.map((o,i)=>({...o,status:i===0?'completed':'stopped',message:i===0?'这只已完成；请勿重复提交。':'本批已中断，这只尚未开始交换。'}))};
+    await page.waitForFunction(()=>document.querySelector('#orders').textContent.includes('本批已中断 · 未派送'));
+    assert.equal(await page.locator('#orders button').count(),0);
+    await page.screenshot({path:path.join(out,'partial-batch-fixture.png'),fullPage:true});
+    checks.push('browser-only waiting/partial-interruption fixtures: completed preserved, no mid-session cancel action');
     assert.deepEqual(errors,[]);
     fs.writeFileSync(path.join(out,'result.json'),JSON.stringify({passed:checks,hardwareTradeTested:false,pageErrors:errors},null,2));
     console.log(JSON.stringify({passed:checks,hardwareTradeTested:false,pageErrors:errors},null,2));

@@ -9,7 +9,7 @@
   let stateBusy = false, mutationBusy = 0, stateVersion = 0, queueSignature = '';
   let state = null, requestId = saved.requestId || crypto.randomUUID();
   const cancelling = new Set();
-  const statuses = { queued:'待派送', preparing:'准备中', searching:'正在搜索交换', trading:'交换中', completed:'已完成', failed:'派送失败', cancelled:'已取消' };
+  const statuses = { queued:'待派送', waiting:'同批等待', stopped:'本批已中断 · 未派送', preparing:'准备中', searching:'正在搜索交换', trading:'交换中', completed:'已完成', failed:'派送失败', cancelled:'已取消' };
   $('species').value = saved.species || 'Metagross';
   $('quick-text').value = saved.quickText || '';
   $('team-text').value = saved.teamText || '';
@@ -47,7 +47,7 @@
     $('send').textContent = mode === 'team' ? '一起派送' : '派送这一只';
     $('send').disabled = submitting || !online || (mode === 'quick' && !catalogReady);
     $('send').setAttribute('aria-busy', String(submitting));
-    $('submit-hint').textContent = submitting ? '正在创建派送单，请稍候；无需再次点击。' : !online ? '连接本地服务后可创建派送单；输入会保留。' : state?.device?.status === 'error' ? 'USB 已停止。请先核对是否收货，再展开 USB 连接设置手动重连；新单不会自动恢复派送。' : mode === 'team' ? `识别到 ${count} 只，按顺序逐只派送。最终数量以服务校验为准；未连接 USB 时先排队等待。` : !catalogReady ? '宝可梦目录未就绪，请重新打开页面重试。' : '加入队列后自动尝试连接并派送；没有 USB 设备时先排队等待。';
+    $('submit-hint').textContent = submitting ? '正在创建派送单，请稍候；无需再次点击。' : !online ? '连接本地服务后可创建派送单；输入会保留。' : state?.device?.status === 'error' ? 'USB 已停止。请先核对是否收货，再展开 USB 连接设置手动重连；新单不会自动恢复派送。' : mode === 'team' ? `识别到 ${count} 只，同批只配对一次，留在交换界面连续收完。最终数量以服务校验为准。` : !catalogReady ? '宝可梦目录未就绪，请重新打开页面重试。' : '加入队列后自动尝试连接并派送；没有 USB 设备时先排队等待。';
     $('connect').disabled = connecting || !$('usb-port').value;
     $('connect').setAttribute('aria-busy', String(connecting));
     ['species','shiny','quick-text','team-text','example','tab-quick','tab-team'].forEach(id => { $(id).disabled = submitting; });
@@ -111,12 +111,12 @@
     orders.forEach(order => {
       const li = document.createElement('li'); li.className = 'order';
       const main = document.createElement('div'); main.className = 'order-main';
-      const name = document.createElement('div'); name.className = 'order-name'; name.textContent = order.name || order.species || '宝可梦';
+      const name = document.createElement('div'); name.className = 'order-name'; name.textContent = (order.name || order.species || '宝可梦') + (order.batchSize > 1 ? ` · ${order.batchIndex}/${order.batchSize}` : '');
       const status = document.createElement('div'); status.className = 'order-status'; status.dataset.status = order.status; status.textContent = statuses[order.status] || '状态待确认';
       const detail = document.createElement('p'); detail.className = 'order-message'; detail.textContent = order.message || '';
       main.append(name, status, detail); li.append(main);
-      if (order.status === 'queued') {
-        const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'cancel'; cancel.textContent = '取消待派单'; cancel.dataset.orderId = String(order.id); cancel.setAttribute('aria-label', `取消 ${name.textContent} 的待派单`); cancel.disabled = !online || cancelling.has(String(order.id)); cancel.addEventListener('click', () => cancelOrder(String(order.id))); li.append(cancel);
+      if (order.status === 'queued' && (order.batchIndex ?? 1) === 1) {
+        const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'cancel'; cancel.textContent = order.batchSize > 1 ? `取消整批 ${order.batchSize} 只` : '取消待派单'; cancel.dataset.orderId = String(order.id); cancel.setAttribute('aria-label', order.batchSize > 1 ? `取消包含 ${order.batchSize} 只宝可梦的整个待派批次` : `取消 ${name.textContent} 的待派单`); cancel.disabled = !online || cancelling.has(String(order.id)); cancel.addEventListener('click', () => cancelOrder(String(order.id))); li.append(cancel);
       }
       fragment.append(li);
     });
@@ -134,10 +134,10 @@
     $('usb-message').textContent = data.device.message || '';
     const code = String(data.settings?.tradeCode || '03180318');
     $('trade-code').textContent = code.replace(/^(\d{4})(\d{4})$/, '$1 $2');
-    $('queue-count').textContent = `${data.pending ?? data.orders.filter(o => ['queued','preparing','searching','trading'].includes(o.status)).length} 只待完成 · 共 ${data.orders.length} 单`;
+    $('queue-count').textContent = `${data.pending ?? data.orders.filter(o => ['queued','waiting','preparing','searching','trading'].includes(o.status)).length} 只待完成 · 共 ${new Set(data.orders.map(o => o.batchId || o.id)).size} 批`;
     $('queue-empty').hidden = data.orders.length > 0;
     $('queue-empty').textContent = '还没有派送单。选一只宝可梦，或贴上队伍开始派送。';
-    $('queue-note').textContent = '仅待派送的单可以取消；准备中、搜索中和交换中的单不能取消。';
+    $('queue-note').textContent = '同一批只配对一次；开始前可整批取消，开始后请留在游戏交换界面，直到本批全部完成。';
     renderQueue(data.orders); updateControls();
   }
   function markOffline(error) {
@@ -190,15 +190,15 @@
       const result = await api('/api/orders', 'POST', { text, requestId });
       if (!Array.isArray(result.orders) || !Number.isInteger(result.count)) throw new Error('派送结果尚未确认。请保留输入并重试，系统会防止重复入队。');
       requestId = crypto.randomUUID(); persist();
-      message('form-message', `已加入 ${result.count} 只到派送队列。使用固定交换码，收完一只后再次搜索。`);
+      message('form-message', `已加入 ${result.count} 只到同一批次。输入交换码一次，留在交换界面逐只确认；本批全部完成再退出。`);
     } catch (error) { message('form-message', error.message + '\n输入已保留；本次程序运行内，未编辑时重试不会重复入队。', true); awaitRecovery(error); }
     finally { submitting = false; updateControls(); pollState(); }
   });
   async function cancelOrder(id) {
     if (!online || cancelling.has(id) || state?.orders.find(order => String(order.id) === id)?.status !== 'queued') return;
     cancelling.add(id); mutationBusy++; stateVersion++; renderQueue(state.orders); message('queue-error', '');
-    try { applyState(await api('/api/orders/' + encodeURIComponent(id), 'DELETE')); message('queue-error', '待派单已取消。如需恢复，请重新派送。'); }
-    catch (error) { message('queue-error', error.message + '\n请查看最新状态；已开始的单不能取消。', true); awaitRecovery(error); }
+    try { applyState(await api('/api/orders/' + encodeURIComponent(id), 'DELETE')); message('queue-error', '待派批次已取消。如需恢复，请重新提交整批。'); }
+    catch (error) { message('queue-error', error.message + '\n请查看最新状态；已开始的批次不能拆开取消。', true); awaitRecovery(error); }
     finally { cancelling.delete(id); mutationBusy--; if (state) renderQueue(state.orders); pollState(); }
   }
   $('copy-code').addEventListener('click', async () => {
