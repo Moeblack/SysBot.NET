@@ -119,4 +119,20 @@ public sealed class UsbFaultTests
         Assert.Equal("error", state.Status);
     }
 
+    [Fact]
+    public void NativeBatchExitKeepsUsbReadyInsteadOfStoppingTheRun()
+    {
+        using var stop = new CancellationTokenSource();
+        DeviceView? state = null;
+        var monitor = new UsbTradeRunMonitor(1, () => "Trainer", value => state = value, stop);
+        monitor.OnLog("SV batch recovered; TrainerTooSlow. Exited trade to Portal.", "Trainer");
+        Assert.False(stop.IsCancellationRequested);
+        Assert.Equal("ready", state!.Status);
+        Assert.Contains("退出交换", state.Message);
+        monitor.OnFault(new IOException("later unplug"));
+        Assert.True(stop.IsCancellationRequested);
+        monitor.OnLog("SV batch recovered; late log", "Trainer");
+        Assert.Equal("error", state.Status);
+    }
+
 }

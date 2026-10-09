@@ -11,6 +11,11 @@ public sealed class UsbTradeRunMonitor(int port, Func<string> currentLabel, Acti
         lock (sync)
         {
             if (failed || identity != currentLabel()) return;
+            if (message.StartsWith("SV batch recovered;", StringComparison.Ordinal))
+            {
+                report(new("ready", "本批已中断并退出交换，派送机继续待命；请核对收货，只重提未收到的部分。", port));
+                return;
+            }
             if (message.StartsWith("SV batch stopped;", StringComparison.Ordinal))
             {
                 failed = true;

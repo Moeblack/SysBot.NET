@@ -25,6 +25,7 @@ public partial class PokeTradeBotSV
     {
         SVBatchTradeCoordinator<PK9>? coordinator = null;
         var failure = PokeTradeResult.ExceptionInternal;
+        var failedTradeResult = false;
         root.IsRetry = true; // Batch execution is never replayed through the ordinary retry path.
         try
         {
@@ -51,7 +52,10 @@ public partial class PokeTradeBotSV
                 if (!ReferenceEquals(member, root))
                     member.IsProcessing = false;
                 if (failure != PokeTradeResult.Success)
+                {
+                    failedTradeResult = true;
                     throw new InvalidOperationException($"SV batch interrupted: {failure}.");
+                }
             }
         }
         catch (Exception ex)
@@ -79,8 +83,23 @@ public partial class PokeTradeBotSV
             {
                 Log($"Batch interruption notification failed: {notificationError.Message}");
             }
-            // Do not let SocketException reach InnerLoop's reconnect-and-dequeue path.
-            // No recovery buttons on an unknown screen or after a USB fault/cancellation.
+            if (failedTradeResult)
+            {
+                try
+                {
+                    if (await SVBatchFailureRecovery.TryExitAsync(failure, ct => ExitTradeToPortal(false, ct), token).ConfigureAwait(false))
+                    {
+                        Log($"SV batch recovered; {failure}. Exited trade to Portal; failed batch is not requeued. Ready for new orders.");
+                        return;
+                    }
+                }
+                catch (Exception recoveryError)
+                {
+                    Log($"Batch exit failed: {recoveryError.Message}");
+                }
+            }
+            // Actual transport faults/cancellation or failed native recovery still stop the run.
+            // Never replay this batch through InnerLoop's reconnect-and-dequeue path.
             throw new InvalidOperationException($"SV batch stopped; {ex.Message} Completed trades are retained, remaining trades canceled. Manual restart required.", ex);
         }
         finally
