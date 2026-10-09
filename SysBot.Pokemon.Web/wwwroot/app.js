@@ -47,7 +47,7 @@
     $('send').textContent = mode === 'team' ? '一起派送' : '派送这一只';
     $('send').disabled = submitting || !online || (mode === 'quick' && !catalogReady);
     $('send').setAttribute('aria-busy', String(submitting));
-    $('submit-hint').textContent = submitting ? '正在创建派送单，请稍候；无需再次点击。' : !online ? '连接本地服务后可创建派送单；输入会保留。' : mode === 'team' ? `识别到 ${count} 只，按顺序逐只派送。最终数量以服务校验为准；未连接 USB 时先排队等待。` : !catalogReady ? '宝可梦目录未就绪，请重新打开页面重试。' : '加入队列后自动尝试连接并派送；没有 USB 设备时先排队等待。';
+    $('submit-hint').textContent = submitting ? '正在创建派送单，请稍候；无需再次点击。' : !online ? '连接本地服务后可创建派送单；输入会保留。' : state?.device?.status === 'error' ? 'USB 已停止。请先核对是否收货，再展开 USB 连接设置手动重连；新单不会自动恢复派送。' : mode === 'team' ? `识别到 ${count} 只，按顺序逐只派送。最终数量以服务校验为准；未连接 USB 时先排队等待。` : !catalogReady ? '宝可梦目录未就绪，请重新打开页面重试。' : '加入队列后自动尝试连接并派送；没有 USB 设备时先排队等待。';
     $('connect').disabled = connecting || !$('usb-port').value;
     $('connect').setAttribute('aria-busy', String(connecting));
     ['species','shiny','quick-text','team-text','example','tab-quick','tab-team'].forEach(id => { $(id).disabled = submitting; });

@@ -18,6 +18,7 @@ public abstract class SwitchUSB : IConsoleConnection
     public string Label { get; set; }
     public bool Connected { get; protected set; }
     private int Port { get; }
+    public UsbTransportGuard TransportGuard { get; } = new();
 
     protected SwitchUSB(int port)
     {
@@ -48,6 +49,7 @@ public abstract class SwitchUSB : IConsoleConnection
 
     public void Connect()
     {
+        TransportGuard.Reset();
         _device = TryFind() ?? throw new Exception("USB device not found.");
         var usb = _device ?? throw new Exception("USB device not found.");
         lock (_sync)
@@ -66,6 +68,7 @@ public abstract class SwitchUSB : IConsoleConnection
 
             _reader = usb.OpenEndpointReader(ReadEndpointID.Ep01);
             _writer = usb.OpenEndpointWriter(WriteEndpointID.Ep01);
+            Connected = true;
         }
     }
 
@@ -115,6 +118,7 @@ public abstract class SwitchUSB : IConsoleConnection
             _writer = null;
             _device?.Dispose();
             _device = null;
+            Connected = false;
         }
     }
 
@@ -146,11 +150,13 @@ public abstract class SwitchUSB : IConsoleConnection
 
     protected byte[] ReadBulkUSB()
     {
+        TransportGuard.ThrowIfFaulted();
         // Give it time to push back.
         Thread.Sleep(1);
 
         lock (_sync)
         {
+            TransportGuard.ThrowIfFaulted();
             try
             {
                 if (_reader == null)
@@ -159,14 +165,17 @@ public abstract class SwitchUSB : IConsoleConnection
                 // Let usb-botbase tell us the response size.
                 Span<byte> sizeOfReturn = stackalloc byte[4];
                 var ec = _reader.Read(sizeOfReturn, 5000, out int ret);
+                TransportGuard.ValidateTransfer(ec == Error.Success, ret, 4, true, "response header");
                 if (ec != Error.Success && ret == 0)
                     throw new UsbException(ec);
 
                 int size = ReadInt32LittleEndian(sizeOfReturn);
+                TransportGuard.ValidateResponseSize(size);
                 return ReadResult(size, _reader);
             }
             catch (Exception ex)
             {
+                TransportGuard.RecordFailure(ex);
                 // Win32Error is returned when the device aborts a transfer, which happens when, for example, readMem() is called with an invalid address.
                 // As such, we ignore it to avoid log spam but still return a zero-buffer to avoid crashing the caller, and to maintain connection.
                 var error = ex is UsbException usbEx ? usbEx.ErrorCode : Error.Other;
@@ -177,21 +186,24 @@ public abstract class SwitchUSB : IConsoleConnection
         }
     }
 
-    private static byte[] ReadResult(int size, UsbEndpointReader reader)
+    private byte[] ReadResult(int size, UsbEndpointReader reader)
     {
         var buffer = new byte[size];
         ReadResult(size, reader, buffer);
         return buffer;
     }
 
-    private static void ReadResult(int size, UsbEndpointReader reader, Span<byte> buffer)
+    private void ReadResult(int size, UsbEndpointReader reader, Span<byte> buffer)
     {
         // Loop until we have read everything.
         int transfSize = 0;
         while (transfSize < size)
         {
             Thread.Sleep(1);
-            var ec = reader.Read(buffer, transfSize, Math.Min(UsbEndpointReader.DefReadBufferSize, size - transfSize), 5000, out int lenVal);
+            TransportGuard.ThrowIfFaulted();
+            int requested = Math.Min(UsbEndpointReader.DefReadBufferSize, size - transfSize);
+            var ec = reader.Read(buffer, transfSize, requested, 5000, out int lenVal);
+            TransportGuard.ValidateTransfer(ec == Error.Success, lenVal, requested, false, "response payload");
             if (ec != Error.Success)
                 throw new UsbException(ec);
             transfSize += lenVal;
@@ -218,6 +230,7 @@ public abstract class SwitchUSB : IConsoleConnection
 
     private int ReadInternal(Span<byte> buffer)
     {
+        TransportGuard.ThrowIfFaulted();
         try
         {
             if (_reader == null)
@@ -225,10 +238,14 @@ public abstract class SwitchUSB : IConsoleConnection
 
             Span<byte> sizeOfReturn = stackalloc byte[4];
             var ec = _reader.Read(sizeOfReturn, 5000, out int ret);
+            TransportGuard.ValidateTransfer(ec == Error.Success, ret, 4, true, "response header");
             if (ec != Error.Success && ret == 0)
                 throw new UsbException(ec);
 
+            int size = ReadInt32LittleEndian(sizeOfReturn);
+            TransportGuard.ValidateResponseSize(size, buffer.Length);
             ec = _reader.Read(buffer, 5000, out var lenVal);
+            TransportGuard.ValidateTransfer(ec == Error.Success, lenVal, size, true, "response payload");
             if (ec != Error.Success)
                 throw new UsbException(ec);
 
@@ -236,6 +253,7 @@ public abstract class SwitchUSB : IConsoleConnection
         }
         catch (Exception ex)
         {
+            TransportGuard.RecordFailure(ex);
             // Win32Error is returned when the device aborts a transfer, which happens when, for example, readMem() is called with an invalid address.
             // As such, we ignore it to avoid log spam, log other exceptions, and return 0 to maintain connection.
             var error = ex is UsbException usbEx ? usbEx.ErrorCode : Error.Other;
@@ -247,6 +265,7 @@ public abstract class SwitchUSB : IConsoleConnection
 
     private int SendInternal(ReadOnlySpan<byte> buffer)
     {
+        TransportGuard.ThrowIfFaulted();
         try
         {
             if (_writer == null)
@@ -257,10 +276,12 @@ public abstract class SwitchUSB : IConsoleConnection
             WriteUInt32LittleEndian(tmp, pack);
 
             var ec = _writer.Write(tmp, 2000, out int ret);
+            TransportGuard.ValidateTransfer(ec == Error.Success, ret, 4, true, "command header");
             if (ec != Error.Success && ret == 0)
                 throw new UsbException(ec);
 
             ec = _writer.Write(buffer, 2000, out var l);
+            TransportGuard.ValidateTransfer(ec == Error.Success, l, buffer.Length, true, "command payload");
             if (ec != Error.Success)
                 throw new UsbException(ec);
 
@@ -268,6 +289,7 @@ public abstract class SwitchUSB : IConsoleConnection
         }
         catch (Exception ex)
         {
+            TransportGuard.RecordFailure(ex);
             // Win32Error is returned when the device aborts a transfer, which happens when, for example, readMem() is called with an invalid address.
             // As such, we ignore it to avoid log spam, log other exceptions, and return 0 to maintain connection.
             var error = ex is UsbException usbEx ? usbEx.ErrorCode : Error.Other;

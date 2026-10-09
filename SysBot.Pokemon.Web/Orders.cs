@@ -37,6 +37,7 @@ public sealed class WebOrders : IAsyncDisposable
     private readonly Dictionary<string, PokeTradeDetail<PK9>> details = [];
     private readonly CancellationTokenSource shutdown = new();
     private Task? deviceTask;
+    private bool requiresExplicitReconnect;
     private DeviceView deviceState = new("disconnected", "派送机未连接；可以先排好队，再接上 USB。", null);
     private WebSettings settings;
     public PokeTradeHub<PK9> Hub { get; }
@@ -129,7 +130,11 @@ public sealed class WebOrders : IAsyncDisposable
         }
         if (autoPort is not null)
         {
-            try { Connect(autoPort.Value); }
+            try
+            {
+                lock (sync)
+                    if (!requiresExplicitReconnect) Connect(autoPort.Value);
+            }
             catch (OrderException) { /* Queue survives a unavailable device; state carries the recovery action. */ }
         }
         return new BatchView(added.ToArray(), added.Count);
@@ -145,6 +150,7 @@ public sealed class WebOrders : IAsyncDisposable
                 if (deviceState.Port != port) throw new OrderException("当前派送机还在运行；更换 USB 端口前，请关闭并重新启动网页程序。");
                 return Snapshot();
             }
+            requiresExplicitReconnect = false;
             settings = settings with { UsbPort = port };
             File.WriteAllText(settingsFile, System.Text.Json.JsonSerializer.Serialize(settings));
             deviceState = new("connecting", "正在连接 USB 派送机，请让游戏停在大地图。", port);
@@ -152,7 +158,18 @@ public sealed class WebOrders : IAsyncDisposable
             {
                 try
                 {
-                    await device.RunAsync(Hub, port, state => { lock (sync) deviceState = state; }, shutdown.Token).ConfigureAwait(false);
+                    await device.RunAsync(Hub, port, state =>
+                    {
+                        lock (sync)
+                        {
+                            deviceState = state;
+                            if (state.Status != "error") return;
+                            requiresExplicitReconnect = true;
+                            // Freeze uncertainty before the bot's generic abort notifier can overwrite it.
+                            foreach (var item in orders.Where(o => o.Status is "preparing" or "searching" or "trading" || (o.Status == "queued" && details[o.Id].IsProcessing)).ToArray())
+                                Update(item.Id, "failed", "USB 通信中断，未确认是否收货；请先检查游戏盒子，避免重复派送。");
+                        }
+                    }, shutdown.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
                 catch (Exception e) { Console.Error.WriteLine(e); }
@@ -160,7 +177,8 @@ public sealed class WebOrders : IAsyncDisposable
                 {
                     lock (sync)
                     {
-                        if (!shutdown.IsCancellationRequested)
+                        if (!shutdown.IsCancellationRequested) requiresExplicitReconnect = true;
+                        if (!shutdown.IsCancellationRequested && deviceState.Status != "error")
                             deviceState = new("error", "USB 连接已停止。检查线缆、端口、usb-botbase 与朱紫 4.0.0，再点「连接派送机」。", port);
                         foreach (var item in orders.Where(o => o.Status is "preparing" or "searching" or "trading" || (o.Status == "queued" && details[o.Id].IsProcessing)).ToArray())
                             Update(item.Id, "failed", "连接中断，未确认是否收货；请先检查游戏盒子，避免重复派送。");
@@ -228,7 +246,7 @@ internal sealed class WebTradeNotifier(WebOrders owner, string id) : IPokeTradeN
             PokeTradeResult.TrainerTooSlow => "等待确认超时；请先看游戏是否已收货，再决定是否重新下单。",
             PokeTradeResult.TrainerLeft => "接收方已退出交换；需要时重新下单。",
             PokeTradeResult.TradeEvolveNotAllowed => "交换材料会进化，请换一只不会交换进化的宝可梦。",
-            _ => "本次派送没有确认完成。请先检查游戏盒子；后面的订单会继续处理。",
+            _ => "本次派送没有确认完成。请先检查游戏盒子，确认收货情况后再决定是否重试。",
         };
         owner.Update(id, "failed", message);
         OnFinish?.Invoke(routine);

@@ -35,8 +35,7 @@ public static class UsbDevices
 
 public sealed class UsbTradeDevice : IWebTradeDevice, ILogForwarder
 {
-    private Action<DeviceView>? report;
-    private int port;
+    private UsbTradeRunMonitor? monitor;
 
     public UsbTradeDevice()
     {
@@ -48,32 +47,35 @@ public sealed class UsbTradeDevice : IWebTradeDevice, ILogForwarder
     {
         if (!NativeUsb.Available)
             throw new OrderException("缺少 USB 原生库，请重新解压完整运行包。");
-        port = usbPort;
-        report = update;
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(token);
         var state = new PokeBotState { Connection = new SwitchConnectionConfig { Protocol = SwitchProtocol.USB, Port = usbPort } };
         state.Initialize(PokeRoutineType.LinkTrade);
         state.Initialize();
         var bot = new PokeTradeBotSV(hub, state);
+        var usb = (SwitchUSB)bot.Connection;
+        var run = new UsbTradeRunMonitor(usbPort, () => bot.Connection.Label, update, stop);
+        monitor = run;
+        usb.TransportGuard.Enabled = true;
+        usb.TransportGuard.Faulted += run.OnFault;
         try
         {
             // No PokeBotRunner integrations or idle distribution: same upstream queue and SV routine only.
-            await bot.RunAsync(token).ConfigureAwait(false);
+            await bot.RunAsync(stop.Token).ConfigureAwait(false);
         }
         finally
         {
             // Upstream RunAsync doesn't disconnect if InitialStartup throws.
             try { bot.Connection.Disconnect(); }
             catch (Exception e) { Console.Error.WriteLine(e.Message); }
-            report = null;
+            usb.TransportGuard.Faulted -= run.OnFault;
+            monitor = null;
         }
     }
 
     public void Forward(string message, string identity)
     {
         Console.WriteLine($"[{identity}] {message}");
-        if (identity != $"USB-{port}") return;
-        if (message.Contains("Starting main PokeTradeBotSV loop", StringComparison.Ordinal))
-            report?.Invoke(new("ready", "派送机已就绪 · USB 本地交换", port));
+        monitor?.OnLog(message, identity);
     }
 }
 

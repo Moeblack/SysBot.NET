@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using PKHeX.Core;
 using SysBot.Pokemon;
+using SysBot.Base;
 using SysBot.Pokemon.Web;
 using Xunit;
 
@@ -198,6 +199,54 @@ public sealed class WebOrdersTests
         await Assert.ThrowsAsync<OrderException>(() => fixture.Orders.SubmitAsync(new(text, id == "valid" ? Guid.NewGuid().ToString() : id)));
         Assert.Equal(0, generator.Calls);
         Assert.Equal(0, fixture.Queue.Count);
+    }
+
+    [Fact]
+    public async Task UsbFaultStopsWholeRunAndNewSubmissionDoesNotReconnectOrDequeueNext()
+    {
+        int runs = 0;
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var device = new Device(async (hub, report, token) =>
+        {
+            if (Interlocked.Increment(ref runs) != 1)
+            {
+                await Task.Delay(Timeout.Infinite, token);
+                return;
+            }
+            using var stop = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var monitor = new UsbTradeRunMonitor(1234, () => "renamed-trainer", report, stop);
+            var guard = new UsbTransportGuard { Enabled = true };
+            guard.Faulted += monitor.OnFault;
+            var queue = hub.Queues.GetQueue(PokeRoutineType.LinkTrade);
+            Assert.True(queue.TryDequeue(out var active, out _, true));
+            active.IsProcessing = true;
+            await active.TradeInitialize(null!);
+            monitor.OnLog("Starting main PokeTradeBotSV loop.", "renamed-trainer");
+            started.SetResult();
+            await release.Task.WaitAsync(token);
+            try { guard.RecordFailure(new IOException("Pipe error")); }
+            catch (IOException) { await active.TradeCanceled(null!, PokeTradeResult.ExceptionInternal); }
+            Assert.True(stop.IsCancellationRequested); // Generic bot catch cannot continue its while loop.
+            Assert.Equal(2, queue.Count);
+            Assert.Throws<IOException>(() => guard.ThrowIfFaulted()); // HardStop(None) is blocked too.
+        });
+        await using var fixture = new Fixture(device: device);
+        await fixture.Orders.SubmitAsync(Request());
+        fixture.Orders.Connect(1234);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal("ready", fixture.Orders.Snapshot().Device.Status);
+        release.SetResult();
+        await Eventually(() => fixture.Status(0) == "failed" && fixture.Orders.Snapshot().Device.Status == "error");
+        Assert.Contains("USB", fixture.Orders.Snapshot().Orders[0].Message);
+        Assert.Contains("未确认是否收货", fixture.Orders.Snapshot().Orders[0].Message);
+        Assert.Equal(2, fixture.Queue.Count);
+        await fixture.Orders.SubmitAsync(Request());
+        Assert.Equal(1, Volatile.Read(ref runs));
+        Assert.Equal(5, fixture.Queue.Count);
+        Assert.Equal("error", fixture.Orders.Snapshot().Device.Status);
+        await Eventually(() => { fixture.Orders.Connect(1234); return Volatile.Read(ref runs) == 2; });
+        Assert.Equal(5, fixture.Queue.Count);
     }
 
     private static async Task Eventually(Func<bool> predicate)
