@@ -9,12 +9,15 @@ public sealed class TradePartnerSV(TradeMyStatus Info)
     public string TID7 { get; } = Info.DisplayTID.ToString("D6");
     public string SID7 { get; } = Info.DisplaySID.ToString("D4");
     public string TrainerName { get; } = Info.OT;
+    public uint ID32 { get; } = Info.ID32;
+    public int Gender { get; } = Info.Gender;
 }
 
 public sealed class TradeMyStatus
 {
     public readonly byte[] Data = new byte[0x30];
 
+    public uint ID32 => BinaryPrimitives.ReadUInt32LittleEndian(Data.AsSpan(0));
     public uint DisplaySID => BinaryPrimitives.ReadUInt32LittleEndian(Data.AsSpan(0)) / 1_000_000;
     public uint DisplayTID => BinaryPrimitives.ReadUInt32LittleEndian(Data.AsSpan(0)) % 1_000_000;
 

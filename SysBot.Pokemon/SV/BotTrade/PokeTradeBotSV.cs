@@ -431,6 +431,21 @@ public partial class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) 
                 await ExitTradeToPortal(false, token).ConfigureAwait(false);
             return update;
         }
+        if (ConnectionPolicy.IsLocal && TradeSettings.ApplyPartnerTrainerSV && poke.Type == PokeTradeType.Specific)
+        {
+            if (SVAutoOT.TryApply(toSend, tradePartner, out var adapted, out var reason))
+            {
+                toSend = adapted;
+                poke.TradeData = adapted;
+                await SetBoxPokemonAbsolute(BoxStartOffset, adapted, token, sav).ConfigureAwait(false);
+                Log($"AutoOT applied: {tradePartner.TrainerName}-{tradePartner.TID7} (recipient identity).");
+            }
+            else
+            {
+                Log($"AutoOT not applied: {reason}");
+                await poke.SendNotification(this, $"AutoOT：{reason}").ConfigureAwait(false);
+            }
+        }
         if (batch is not null &&
             (TradeEvolutions.WillTradeEvolve(offered.Species, offered.Form, offered.HeldItem, toSend.Species) ||
              TradeEvolutions.WillTradeEvolve(toSend.Species, toSend.Form, toSend.HeldItem, offered.Species)))

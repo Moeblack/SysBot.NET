@@ -58,7 +58,7 @@ public sealed class WebOrders : IAsyncDisposable
             settings = settings with { TradeCode = "03180318" };
         Hub = new PokeTradeHub<PK9>(new PokeTradeHubConfig
         {
-            Trade = { PerformLocalTradeSV = true, TradeWaitTime = 90, MaxTradeConfirmTime = 60 },
+            Trade = { PerformLocalTradeSV = true, ApplyPartnerTrainerSV = true, TradeWaitTime = 90, MaxTradeConfirmTime = 60 },
             Distribution = { DistributeWhileIdle = false },
             Legality = PokemonGenerator.CreateSettings(),
         });

@@ -49,6 +49,9 @@ public class TradeSettings : IBotStateSettings, ICountSettings
     [Category(TradeConfig), Description("SV only: use native local wireless trades. Requires USB; other transports are rejected, never switched to online. Disconnects the game if online. Restart the bot after changing this setting.")]
     public bool PerformLocalTradeSV { get; set; }
 
+    [Category(TradeConfig), Description("SV local Specific trades: apply the connected recipient's original trainer identity when compatible with the encounter.")]
+    public bool ApplyPartnerTrainerSV { get; set; }
+
     /// <summary>
     /// Gets a random trade code based on the range settings.
     /// </summary>
