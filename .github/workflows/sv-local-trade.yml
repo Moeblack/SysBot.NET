@@ -18,25 +18,50 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
       - name: Restore
         run: dotnet restore SysBot.NET.slnx
       - name: Build
         run: dotnet build SysBot.NET.slnx -c Release --no-restore
-      - name: Test
-        run: dotnet test SysBot.Tests/SysBot.Tests.csproj -c Release --no-build --logger "trx;LogFileName=tests.trx" --results-directory artifacts/test-results
-      - name: Publish Windows app
+      - name: Test all backends
+        run: dotnet test SysBot.NET.slnx -c Release --no-build --logger trx --results-directory artifacts/test-results
+      - name: Publish Windows desktop app
         run: dotnet publish SysBot.Pokemon.WinForms/SysBot.Pokemon.WinForms.csproj -c Release -r win-x64 --self-contained true -o artifacts/win-x64
-      - name: Include documentation
+      - name: Include desktop documentation
         run: |
           Copy-Item docs/SV-LOCAL-TRADE.zh-CN.md artifacts/win-x64/README-local-trade.zh-CN.md
+          Copy-Item docs/SV-LOCAL-WEB.zh-CN.md artifacts/win-x64/SV-LOCAL-WEB.zh-CN.md
           Copy-Item LICENSE artifacts/win-x64/LICENSE
           Copy-Item examples/config.sv-local.json artifacts/win-x64/config.json
+      - name: Publish standalone web package
+        run: ./scripts/publish-web.ps1
+      - name: Install browser checks
+        run: |
+          npm ci
+          npx playwright install chromium
+      - name: Verify actual web package in browser (no Switch)
+        env:
+          TEST_WEB_EXE: artifacts/web-win-x64/SysBot.Web.exe
+        run: npm run test:web
       - uses: actions/upload-artifact@v4
         with:
           name: SysBot-SV-Local-win-x64
           path: artifacts/win-x64/
       - uses: actions/upload-artifact@v4
+        with:
+          name: SysBot-SV-Local-Web-win-x64
+          path: |
+            artifacts/SysBot-SV-Local-Web-win-x64.zip
+            artifacts/SysBot-SV-Local-Web-win-x64.zip.sha256
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-results
-          path: artifacts/test-results/
+          path: |
+            artifacts/test-results/
+            artifacts/web-browser-check/result.json
+            artifacts/web-browser-check/*.png
+            artifacts/web-browser-check/server.log

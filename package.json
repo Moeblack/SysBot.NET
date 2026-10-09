@@ -1,0 +1,10 @@
+{
+  "name": "sysbot-local-web-checks",
+  "private": true,
+  "scripts": {
+    "test:web": "node scripts/test-web.cjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.58.2"
+  }
+}
