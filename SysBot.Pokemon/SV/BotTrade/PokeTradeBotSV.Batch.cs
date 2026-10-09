@@ -80,7 +80,7 @@ public partial class PokeTradeBotSV
             }
             // Do not let SocketException reach InnerLoop's reconnect-and-dequeue path.
             // No recovery buttons on an unknown screen or after a USB fault/cancellation.
-            throw new InvalidOperationException("SV batch stopped; completed trades are retained, remaining trades canceled. Manual restart required.", ex);
+            throw new InvalidOperationException($"SV batch stopped; {ex.Message} Completed trades are retained, remaining trades canceled. Manual restart required.", ex);
         }
         finally
         {

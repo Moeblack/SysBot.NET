@@ -126,4 +126,20 @@ public sealed class SVBatchCoordinatorTests
         Assert.Equal(offered.EncryptionConstant, received.EncryptionConstant);
         Assert.Equal(SearchUtil.HashByDetails(offered), SearchUtil.HashByDetails(received));
     }
+    [Fact]
+    public async Task ActualGeneratedFavoriteBatchPassesCorePreflight()
+    {
+        var text = string.Join("\n\n", PokemonCatalog.Choices.Take(8).Select(x => x.Template));
+        var generated = await new PokemonGenerator().GenerateAsync(text);
+        foreach (var member in generated)
+        {
+            Assert.True(member.Pokemon.ChecksumValid, $"{member.Species} has stale checksum after generation");
+            Assert.True(new LegalityAnalysis(member.Pokemon).Valid, $"{member.Species} legality failed");
+        }
+        var members = generated.Select(g => new PokeTradeDetail<PK9> { Code=3180318, TradeData=g.Pokemon,
+            Trainer=new PokeTradeTrainerInfo("Local Web"), Notifier=new PokeTradeLogNotifier<PK9>(), Type=PokeTradeType.Specific, IsRetry=true }).ToArray();
+        members[0].BatchTrades = Array.AsReadOnly(members);
+        Assert.True(new SVBatchTradeCoordinator<PK9>(members[0]).HasValidShape(members[0]));
+    }
+
 }

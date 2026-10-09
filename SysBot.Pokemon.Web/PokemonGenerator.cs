@@ -119,6 +119,9 @@ public sealed class PokemonGenerator : IPokemonGenerator
             if (differences.Count != 0)
                 throw Error(index, "合法化改变了指定配置，请调整配置后重试。", differences.ToArray());
             pk.ResetPartyStats();
+            // ResetPartyStats can change stored fields after ALM generation; keep the in-memory
+            // PK9 checksum current before the batch preflight, not only when writing the work slot.
+            pk.RefreshChecksum();
             output.Add(new GeneratedPokemon(chinese.Species[pk.Species], english.Species[pk.Species], pk));
         }
         return output;
