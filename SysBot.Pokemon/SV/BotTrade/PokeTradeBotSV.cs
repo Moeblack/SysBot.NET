@@ -445,7 +445,7 @@ public partial class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) 
         }
 
         Log("Confirming trade.");
-        var tradeResult = await ConfirmAndStartTrading(poke, token, batch).ConfigureAwait(false);
+        var tradeResult = await ConfirmAndStartTrading(poke, token, batch, toSend).ConfigureAwait(false);
         if (tradeResult != PokeTradeResult.Success)
         {
             if (batch is null)
@@ -470,10 +470,12 @@ public partial class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) 
         }
         // Trade was successful!
         var received = await ReadPokemon(BoxStartOffset, BoxFormatSlotSize, token).ConfigureAwait(false);
-        if (batch is not null && (received.Species == 0 || !received.ChecksumValid ||
-            !new LegalityAnalysis(received).Valid || received.EncryptionConstant != offered.EncryptionConstant ||
-            SearchUtil.HashByDetails(received) != SearchUtil.HashByDetails(offered)))
+        if (batch is not null && (batch.OfferSnapshot?.Matches(received) != true ||
+            !new LegalityAnalysis(received).Valid))
+        {
+            Log($"Batch receipt mismatch: expected species={offered.Species}, EC={offered.EncryptionConstant:X8}; received species={received.Species}, EC={received.EncryptionConstant:X8}, checksum={received.ChecksumValid}. Remaining batch stopped; inspect received Pokémon before retrying.");
             return PokeTradeResult.SuspiciousActivity;
+        }
         // Pokémon in b1s1 is same as the one they were supposed to receive (was never sent).
         if (SearchUtil.HashByDetails(received) == SearchUtil.HashByDetails(toSend) && received.Checksum == toSend.Checksum)
         {
@@ -488,6 +490,7 @@ public partial class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) 
         if (batch is not null)
         {
             batch.LastReceived = received;
+            batch.LastSent = (PK9)toSend.Clone();
             batch.CurrentCompleted = true; // Preserve this success even if a notifier/cleanup subsequently throws.
         }
         await poke.TradeFinished(this, received).ConfigureAwait(false);
@@ -537,27 +540,26 @@ public partial class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) 
         }
     }
 
-    private async Task<PokeTradeResult> ConfirmAndStartTrading(PokeTradeDetail<PK9> detail, CancellationToken token, BatchSessionContext? batch = null)
+    private async Task<PokeTradeResult> ConfirmAndStartTrading(PokeTradeDetail<PK9> detail, CancellationToken token, BatchSessionContext? batch = null, PK9? sent = null)
     {
         // We'll keep watching B1S1 for a change to indicate a trade started -> should try quitting at that point.
         var oldEC = await SwitchConnection.ReadBytesAbsoluteAsync(BoxStartOffset, 8, token).ConfigureAwait(false);
-        if (batch is not null && !await ValidateBatchOffer(batch, token).ConfigureAwait(false))
-            return PokeTradeResult.SuspiciousActivity;
+        if (batch is not null)
+        {
+            var offer = batch.OfferSnapshot ?? throw new InvalidOperationException("Missing batch offer snapshot.");
+            var outgoing = new SVBatchOfferSnapshot(BoxStartOffset, sent ?? detail.TradeData);
+            return await SVBatchConfirmation.RunAsync(offer, outgoing,
+                ct => ValidateBatchPartner(batch, ct),
+                ct => ReadPokemon(offer.Address, BoxFormatSlotSize, ct),
+                async ct => !(await SwitchConnection.ReadBytesAbsoluteAsync(BoxStartOffset, 8, ct).ConfigureAwait(false)).SequenceEqual(oldEC),
+                (milliseconds, ct) => Click(A, milliseconds, ct),
+                (milliseconds, ct) => Task.Delay(milliseconds, ct),
+                Hub.Config.Trade.MaxTradeConfirmTime, token, Log).ConfigureAwait(false);
+        }
 
         await Click(A, 3_000, token).ConfigureAwait(false);
         for (int i = 0; i < Hub.Config.Trade.MaxTradeConfirmTime; i++)
         {
-            if (batch is not null)
-            {
-                var slot = await SwitchConnection.ReadBytesAbsoluteAsync(BoxStartOffset, 8, token).ConfigureAwait(false);
-                if (!slot.SequenceEqual(oldEC))
-                {
-                    await Task.Delay(25_000, token).ConfigureAwait(false);
-                    return PokeTradeResult.Success;
-                }
-            }
-            if (batch is not null && !await ValidateBatchOffer(batch, token).ConfigureAwait(false))
-                return PokeTradeResult.SuspiciousActivity;
             if (await IsUserBeingShifty(detail, token).ConfigureAwait(false))
                 return PokeTradeResult.SuspiciousActivity;
 

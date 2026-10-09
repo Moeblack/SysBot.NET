@@ -7,8 +7,10 @@ using PKHeX.Core.Searching;
 namespace SysBot.Pokemon;
 
 /// <summary>
-/// A validated offer buffer belongs to one exchange, not to the currently selected preview.
-/// Freeze its address before pressing A; resolve a new buffer only at the next offer boundary.
+/// Immutable identity captured before selection. Address denotes the observed preview buffer,
+/// not a promise that its contents remain the partner offer: SV also writes our preview there.
+/// The confirmation state machine distinguishes both identities; the original offer is retained
+/// for the independent final receipt check.
 /// </summary>
 public sealed class SVBatchOfferSnapshot
 {
@@ -27,6 +29,15 @@ public sealed class SVBatchOfferSnapshot
 
     public bool Matches(PK9 offered) => offered.Species != 0 && offered.ChecksumValid &&
         offered.EncryptionConstant == encryptionConstant && SearchUtil.HashByDetails(offered) == details;
+
+    public static bool IsFreshNextOffer(PK9 candidate, SVBatchOfferSnapshot? previousOffer, PK9? lastSent, PK9 workSlot)
+    {
+        if (candidate.Species == 0 || !candidate.ChecksumValid) return false;
+        if (previousOffer?.Matches(candidate) == true) return false;
+        static bool Same(PK9 a, PK9 b) => a.EncryptionConstant == b.EncryptionConstant &&
+            SearchUtil.HashByDetails(a) == SearchUtil.HashByDetails(b);
+        return !Same(candidate, workSlot) && (lastSent is null || !Same(candidate, lastSent));
+    }
 
     public async Task<bool> ValidateAsync(Func<ulong, CancellationToken, Task<PK9>> read, CancellationToken token)
     {
