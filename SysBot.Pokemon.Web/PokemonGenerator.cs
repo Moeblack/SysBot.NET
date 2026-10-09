@@ -166,8 +166,14 @@ public sealed class PokemonGenerator : IPokemonGenerator
     {
         if (set.Species == 0)
             throw Error(index, "无法识别宝可梦；请检查物种名以及每只之间的空行。");
+        if (Regex.Matches(set.Text, @"(?im)^\s*Shiny\s*:").Count > 1)
+            throw Error(index, "闪光标记重复，请只保留一行 Shiny: Yes 或 Shiny: No。");
         foreach (var error in set.InvalidLines)
         {
+            // PKHeX exports no line for a non-shiny Pokemon and flags explicit No as invalid.
+            // Accept this exact false value only; do not accept arbitrary invalid shiny tokens.
+            if (!set.Shiny && Regex.IsMatch(error.Value ?? "", @"^Shiny\s*:\s*No\s*$", RegexOptions.IgnoreCase))
+                continue;
             // Allow only these narrowly scoped ALM extensions, never trainer or batch edits.
             if (error.Type == BattleTemplateParseErrorType.TokenUnknown &&
                 Regex.IsMatch(error.Value ?? "", @"^(Ball|Language)\s*:\s*\S", RegexOptions.IgnoreCase))

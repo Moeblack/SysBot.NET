@@ -12,7 +12,7 @@
 
 ## 推荐入口：本地网页
 
-下载 `SysBot-SV-Local-Web-win-x64.zip`，解压后运行 `start-web.cmd`；直接派一只或一次贴队伍，复用上游生成和顺序派送。网页使用说明见 [SV-LOCAL-WEB.zh-CN.md](SV-LOCAL-WEB.zh-CN.md)。新增网页后的完整测试共 98 项通过，真实 Switch 验收仍未完成。
+下载 `SysBot-SV-Local-Web-win-x64.zip`，解压后运行 `start-web.cmd`；直接派一只或一次贴队伍，复用上游生成和顺序派送。网页使用说明见 [SV-LOCAL-WEB.zh-CN.md](SV-LOCAL-WEB.zh-CN.md)。新增网页后的完整测试共 103 项通过，真实 Switch 验收仍未完成。
 
 ## 连接方式
 

@@ -105,7 +105,7 @@ const crypto = require('node:crypto');
     assert.equal((await api('/api/state')).body.orders.length, before);
     checks.push('invalid second block: nothing partially enqueued, original input retained');
 
-    const request = { text:'Eevee\nLevel: 100', requestId:crypto.randomUUID() };
+    const request = { text:'Eevee\nShiny: No\nLevel: 100', requestId:crypto.randomUUID() };
     const a = await api('/api/orders','POST',request), b = await api('/api/orders','POST',request);
     assert.equal(a.status,200,JSON.stringify(a.body)); assert.equal(b.status,200);
     assert.equal(a.body.orders[0].id,b.body.orders[0].id);
