@@ -11,6 +11,13 @@ public sealed class UsbTradeRunMonitor(int port, Func<string> currentLabel, Acti
         lock (sync)
         {
             if (failed || identity != currentLabel()) return;
+            if (message.StartsWith("SV batch stopped;", StringComparison.Ordinal))
+            {
+                failed = true;
+                stop.Cancel();
+                report(new("error", "本批因交换状态检查中断，已停止确认。请查看订单和日志，核对收货后再重连；这不一定是 USB 故障。", port));
+                return;
+            }
             if (message.Contains("Starting main PokeTradeBotSV loop", StringComparison.Ordinal))
                 report(new("ready", "派送机已就绪 · USB 本地交换", port));
         }

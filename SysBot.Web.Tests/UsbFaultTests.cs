@@ -105,4 +105,18 @@ public sealed class UsbFaultTests
         Assert.Throws<IOException>(() => guard.ValidateResponseSize(size));
     }
 
+    [Fact]
+    public void BatchStateRejectionIsNotReportedAsUsbDriverFailure()
+    {
+        using var stop = new CancellationTokenSource();
+        DeviceView? state = null;
+        var monitor = new UsbTradeRunMonitor(1, () => "Trainer", value => state = value, stop);
+        monitor.OnLog("SV batch stopped; SV batch interrupted: SuspiciousActivity.", "Trainer");
+        Assert.True(stop.IsCancellationRequested);
+        Assert.Equal("error", state!.Status);
+        Assert.Contains("不一定是 USB", state.Message);
+        monitor.OnLog("Starting main PokeTradeBotSV loop.", "Trainer");
+        Assert.Equal("error", state.Status);
+    }
+
 }

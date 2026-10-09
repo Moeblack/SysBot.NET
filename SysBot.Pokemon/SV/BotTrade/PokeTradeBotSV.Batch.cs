@@ -16,7 +16,7 @@ public partial class PokeTradeBotSV
         public TradePartnerSV? Partner { get; set; }
         public PK9? LastReceived { get; set; }
         public PK9? Offered { get; set; }
-        public ulong OfferedOffset { get; set; }
+        public SVBatchOfferSnapshot? OfferSnapshot { get; set; }
         public bool CurrentCompleted { get => coordinator.CurrentCompleted; set => coordinator.CurrentCompleted = value; }
     }
 
@@ -94,30 +94,44 @@ public partial class PokeTradeBotSV
 
     private async Task<bool> ValidateBatchPartner(BatchSessionContext context, CancellationToken token)
     {
-        if (await IsConnectedOnline(ConnectedOffset, token).ConfigureAwait(false) ||
-            !await IsInBox(PortalOffset, token).ConfigureAwait(false))
+        if (await IsConnectedOnline(ConnectedOffset, token).ConfigureAwait(false))
+        {
+            Log("Batch guard: game is online; stopped before confirmation.");
             return false;
+        }
+        if (!await IsInBox(PortalOffset, token).ConfigureAwait(false))
+        {
+            Log("Batch guard: no longer in the trade box.");
+            return false;
+        }
         var partner = await TryGetLocalTradePartner(token).ConfigureAwait(false);
         var expected = context.Partner;
         if (partner is null || expected is null || partner.TrainerName != expected.TrainerName ||
             partner.TID7 != expected.TID7 || partner.SID7 != expected.SID7)
+        {
+            Log("Batch guard: partner identity unavailable or changed.");
             return false;
-        var (valid, offset) = await ValidatePointerAll(Offsets.LinkTradePartnerPokemonPointer, token).ConfigureAwait(false);
-        if (!valid || offset == 0)
-            return false;
+        }
+        // Do NOT re-resolve the preview pointer here. Selecting our Pokémon can make it
+        // point at our own preview. The captured offer address remains this round's source.
         LocalTradePartner = partner;
-        TradePartnerOfferedOffset = offset;
         return true;
     }
 
     private async Task<bool> ValidateBatchOffer(BatchSessionContext context, CancellationToken token)
     {
-        if (!await ValidateBatchPartner(context, token).ConfigureAwait(false) ||
-            context.Offered is null || context.OfferedOffset != TradePartnerOfferedOffset)
+        if (!await ValidateBatchPartner(context, token).ConfigureAwait(false))
             return false;
-        var offered = await ReadPokemon(TradePartnerOfferedOffset, BoxFormatSlotSize, token).ConfigureAwait(false);
-        return offered.Species != 0 && offered.ChecksumValid && offered.EncryptionConstant == context.Offered.EncryptionConstant &&
-            SearchUtil.HashByDetails(offered) == SearchUtil.HashByDetails(context.Offered);
+        var snapshot = context.OfferSnapshot;
+        if (snapshot is null)
+        {
+            Log("Batch guard: no captured offer for this exchange.");
+            return false;
+        }
+        var valid = await snapshot.ValidateAsync((offset, ct) => ReadPokemon(offset, BoxFormatSlotSize, ct), token).ConfigureAwait(false);
+        if (!valid)
+            Log($"Batch guard: captured offer changed or became invalid at {snapshot.Address:X}; not the current preview pointer.");
+        return valid;
     }
 
     private async Task<PokeTradeResult> PrepareBatchContinuation(SAV9SV sav, PokeTradeDetail<PK9> member,
@@ -143,7 +157,10 @@ public partial class PokeTradeBotSV
         // an unchanged offer times out instead of confirming stale data or re-searching.
         await member.SendNotification(this, "BatchWaitingOffer: Please select the next Pokémon to offer in this existing trade session.").ConfigureAwait(false);
         var waitMilliseconds = Math.Clamp(Hub.Config.Trade.TradeWaitTime, 5, 120) * 1_000;
-        var offeredOffset = TradePartnerOfferedOffset;
+        var (pointerValid, offeredOffset) = await ValidatePointerAll(Offsets.LinkTradePartnerPokemonPointer, token).ConfigureAwait(false);
+        if (!pointerValid || offeredOffset == 0)
+            return PokeTradeResult.TrainerTooSlow;
+        TradePartnerOfferedOffset = offeredOffset;
         if (!await ReadUntilChanged(TradePartnerOfferedOffset, lastOffered, waitMilliseconds, 0_500, false, true, token).ConfigureAwait(false))
             return PokeTradeResult.TrainerTooSlow;
         if (!await ValidateBatchPartner(context, token).ConfigureAwait(false))
@@ -153,6 +170,11 @@ public partial class PokeTradeBotSV
         var offer = await ReadPokemon(TradePartnerOfferedOffset, BoxFormatSlotSize, token).ConfigureAwait(false);
         if (offer.Species == 0 || !offer.ChecksumValid || !new LegalityAnalysis(offer).Valid)
             return PokeTradeResult.IllegalTrade;
+        if (offer.EncryptionConstant == stable.EncryptionConstant && SearchUtil.HashByDetails(offer) == SearchUtil.HashByDetails(stable))
+        {
+            Log("Batch guard: next-offer pointer still shows our working-slot preview; no next injection.");
+            return PokeTradeResult.TrainerTooSlow;
+        }
         // Evolution animations/learning prompts have no validated selection-state signal.
         if (TradeEvolutions.WillTradeEvolve(offer.Species, offer.Form, offer.HeldItem, member.TradeData.Species) ||
             TradeEvolutions.WillTradeEvolve(member.TradeData.Species, member.TradeData.Form, member.TradeData.HeldItem, offer.Species))

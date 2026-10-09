@@ -333,6 +333,7 @@ internal sealed class WebTradeNotifier(WebOrders owner, string id) : IPokeTradeN
             PokeTradeResult.NoTrainerFound => "没有找到接收机。确认两台游戏都离线，用相同密码重新下单。",
             PokeTradeResult.TrainerTooSlow => "等待确认超时；请先看游戏是否已收货，再决定是否重新下单。",
             PokeTradeResult.TrainerLeft => "接收方已退出交换；需要时重新下单。",
+            PokeTradeResult.SuspiciousActivity => "交换前的一致性检查未通过，程序已停止确认；请保留游戏画面与日志，不要反复下单。",
             PokeTradeResult.TradeEvolveNotAllowed => "交换材料会进化，请换一只不会交换进化的宝可梦。",
             _ => "本次派送没有确认完成。请先检查游戏盒子，确认收货情况后再决定是否重试。",
         };

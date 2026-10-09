@@ -420,7 +420,8 @@ public partial class PokeTradeBotSV(PokeTradeHub<PK9> Hub, PokeBotState Config) 
         if (batch is not null)
         {
             batch.Offered = offered;
-            batch.OfferedOffset = TradePartnerOfferedOffset;
+            batch.OfferSnapshot = new SVBatchOfferSnapshot(TradePartnerOfferedOffset, offered);
+            Log($"Batch offer captured: slot={TradePartnerOfferedOffset:X}, species={offered.Species}, EC={offered.EncryptionConstant:X8}.");
         }
         var trainer = new PartnerDataHolder(0, tradePartner.TrainerName, tradePartner.TID7);
         (toSend, PokeTradeResult update) = await GetEntityToSend(sav, poke, offered, oldEC, toSend, trainer, token).ConfigureAwait(false);
